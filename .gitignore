@@ -30,3 +30,4 @@ Thumbs.db
 
 # Logs (user data, not source)
 *.ulg
+.claude/

@@ -27,6 +27,8 @@ tailor/
   parser/
     ulog_parser.py     # .ulg parser wrapping pyulog
     coordinate.py      # Coordinate frame transforms (FRD/NED/ENU/Wind/ThrustVert)
+    data_pipeline.py   # Channel selection, time windowing, resampling, coord transform
+    export.py          # Data export: CSV, MAT, Parquet with metadata headers
   dynamics/            # (Phase 3) System identification
   control/             # (Phase 4) PID optimization
   ui/
@@ -34,15 +36,17 @@ tailor/
     vehicle_panel.py   # Vehicle list sidebar
     log_panel.py       # Flight log table
     config_panel.py    # Configuration editor
+    log_viewer.py      # pyqtgraph time series viewer, mode indicator, channel selector
 tests/
   test_models.py       # ORM and manager tests
   test_parser.py       # Parser and coordinate transform tests
   test_database.py     # Database lifecycle tests
+  test_pipeline.py     # Data pipeline and export tests
 ```
 
 ## Development Milestones
-- **M1 (Wk 6)**: Project skeleton, DB models, vehicle/log/config CRUD, basic UI
-- **M2 (Wk 12)**: Full .ulg parsing, coordinate system engine
+- **M1 (Wk 6)**: Project skeleton, DB models, vehicle/log/config CRUD, basic UI **[DONE]**
+- **M2 (Wk 12)**: Full .ulg parsing, coordinate system engine, log viewer **[DONE]**
 - **M3 (Wk 20)**: System identification and dynamic analysis
 - **M4 (Wk 28)**: PID optimization and report generation
 - **M5 (Wk 34)**: Testing, packaging, release
@@ -52,6 +56,7 @@ tests/
 - SQLAlchemy ORM for all data (vehicles, logs, configs, results, tuning history)
 - Background threads (QThread) for heavy operations (import, parsing, optimization)
 - Mode-aware coordinate transforms for tail-sitter: thrust-vertical view in hover, FRD in cruise
+- Data pipeline: channel selection → time window → coord transform → resample → filter
 - JSON-serialized parameter storage for flexibility across different vehicle types
 
 ## Running

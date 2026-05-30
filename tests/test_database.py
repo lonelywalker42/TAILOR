@@ -53,6 +53,7 @@ class TestDatabase:
 
     def test_wal_mode(self, tmp_path):
         db = Database(f"sqlite:///{tmp_path / 'test.db'}")
+        db.create_tables()
         with db.engine.connect() as conn:
-            result = conn.execute(db.engine.raw_connection().cursor().execute("PRAGMA journal_mode").fetchone())
-            # WAL mode is set on connect
+            result = conn.exec_driver_sql("PRAGMA journal_mode").fetchone()
+            assert result[0] == "wal"

@@ -28,6 +28,7 @@ from tailor.data.manager import VehicleManager, FlightLogManager
 from tailor.ui.vehicle_panel import VehiclePanel
 from tailor.ui.log_panel import LogPanel
 from tailor.ui.config_panel import ConfigurationPanel
+from tailor.ui.log_viewer import LogViewerWidget
 
 
 class MainWindow(QMainWindow):
@@ -111,14 +112,14 @@ class MainWindow(QMainWindow):
 
         # Log table tab
         self.log_panel = LogPanel(self._db)
+        self.log_panel.log_open_requested.connect(self._on_open_log)
         self.tab_widget.addTab(self.log_panel, "飞行日志")
 
-        # Placeholder tabs for future modules
-        placeholder1 = QWidget()
-        placeholder1_layout = QVBoxLayout(placeholder1)
-        placeholder1_layout.addWidget(QLabel("日志解析与坐标系视图 — 开发中"))
-        self.tab_widget.addTab(placeholder1, "日志分析")
+        # Log viewer / analysis tab
+        self.log_viewer = LogViewerWidget()
+        self.tab_widget.addTab(self.log_viewer, "日志分析")
 
+        # Placeholder tabs for future modules
         placeholder2 = QWidget()
         placeholder2_layout = QVBoxLayout(placeholder2)
         placeholder2_layout.addWidget(QLabel("系统辨识模块 — 开发中"))
@@ -191,6 +192,46 @@ class MainWindow(QMainWindow):
         self.config_panel.load_vehicle(vehicle_id)
         self.log_panel.filter_by_vehicle(vehicle_id)
         self.statusBar().showMessage(f"已选择飞行器 ID: {vehicle_id}")
+
+    def _on_open_log(self, log_id: int):
+        """Open a log in the viewer for analysis."""
+        from tailor.parser.ulog_parser import UlogParser
+
+        with self._db.session_scope() as session:
+            log = session.get(FlightLog, log_id)
+            if not log:
+                self.statusBar().showMessage(f"日志 ID {log_id} 未找到")
+                return
+            file_path = log.file_path
+            file_name = log.file_name
+
+        self.statusBar().showMessage(f"正在解析 {file_name}...")
+        try:
+            parser = UlogParser(Path(file_path))
+            parser.open()
+
+            # Get all available data
+            raw_data = parser.get_core_data()
+            available = parser.get_available_messages()
+            message_fields = {}
+            for msg_name in available:
+                try:
+                    df = parser.get_message_data(msg_name)
+                    if not df.empty:
+                        message_fields[msg_name] = list(df.columns)
+                except Exception:
+                    pass
+
+            segments = parser.get_flight_mode_segments()
+
+            # Load into viewer
+            self.log_viewer.load_data(raw_data, available, message_fields, segments)
+            self.tab_widget.setCurrentWidget(self.log_viewer)
+            self.statusBar().showMessage(f"已加载: {file_name}")
+
+        except Exception as e:
+            self.statusBar().showMessage(f"解析失败: {e}")
+            QMessageBox.warning(self, "解析错误", f"无法解析日志文件:\n{e}")
 
     def _show_about(self):
         """Show about dialog."""

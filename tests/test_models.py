@@ -94,10 +94,11 @@ class TestFlightLogManager:
         assert log1.id == log2.id  # Same record returned
 
     def test_import_batch(self, session, tmp_path):
-        paths = [
-            self._create_dummy_ulg(tmp_path, f"log{i}.ulg")
-            for i in range(3)
-        ]
+        paths = []
+        for i in range(3):
+            p = tmp_path / f"log{i}.ulg"
+            p.write_bytes(b"\x00" * (100 + i))
+            paths.append(p)
         mgr = FlightLogManager(session)
         imported, errors = mgr.import_batch(paths)
         assert len(imported) == 3
@@ -136,7 +137,8 @@ class TestFlightLogManager:
     def test_list_with_filters(self, session, tmp_path):
         mgr = FlightLogManager(session)
         for i in range(5):
-            p = self._create_dummy_ulg(tmp_path, f"log{i}.ulg")
+            p = tmp_path / f"log{i}.ulg"
+            p.write_bytes(b"\x00" * (100 + i))  # Different sizes for different hashes
             log = mgr.import_ulg(p)
             if i < 3:
                 mgr.update(log, flight_mode_label="multirotor")
@@ -183,11 +185,14 @@ class TestConfigurationManager:
 
 
 class TestTag:
-    def test_tag_unique(self, session):
-        t1 = Tag(name="test_tag", color="#00FF00")
-        t2 = Tag(name="test_tag", color="#FF0000")
-        session.add(t1)
-        session.flush()
-        session.add(t2)
-        with pytest.raises(Exception):  # IntegrityError
-            session.flush()
+    def test_tag_unique(self, db):
+        with db.session_scope() as session:
+            t1 = Tag(name="test_tag", color="#00FF00")
+            session.add(t1)
+
+        with db.session_scope() as session:
+            t2 = Tag(name="test_tag", color="#FF0000")
+            session.add(t2)
+            with pytest.raises(Exception):  # IntegrityError
+                session.flush()
+            session.rollback()

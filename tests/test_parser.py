@@ -53,13 +53,14 @@ class TestCoordinateTransformer:
         np.testing.assert_allclose(vec_ned, vec_frd, atol=1e-10)
 
     def test_frd_to_ned_90deg_pitch(self):
-        """90-deg pitch up: FRD x (forward) -> NED z (down)."""
+        """90-deg pitch up: FRD x (forward) -> NED -z (up)."""
         # 90 deg pitch: nose points up
         q = np.array([np.cos(np.pi / 4), 0, np.sin(np.pi / 4), 0])
         vec_frd = np.array([1.0, 0.0, 0.0])
         vec_ned = CoordinateTransformer.frd_to_ned(vec_frd, q)
-        # After 90-deg pitch, forward becomes down in NED
-        np.testing.assert_allclose(vec_ned[2], 1.0, atol=1e-10)
+        # After 90-deg pitch up, body-forward points NED-up (z = -1)
+        np.testing.assert_allclose(vec_ned[2], -1.0, atol=1e-10)
+        np.testing.assert_allclose(vec_ned[0], 0.0, atol=1e-10)
 
     def test_ned_to_enu(self):
         """NED [1,0,0] -> ENU [0,1,0]. N->E, E->N, D->-U."""

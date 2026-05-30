@@ -65,6 +65,8 @@ class LogImportWorker(QThread):
 class LogPanel(QWidget):
     """Panel displaying the flight log table with filtering and import."""
 
+    log_open_requested = Signal(int)  # Emits log_id when user wants to view a log
+
     def __init__(self, db: Database):
         super().__init__()
         self._db = db
@@ -282,9 +284,12 @@ class LogPanel(QWidget):
         pass
 
     def _on_log_double_clicked(self, index):
-        """Handle double-click on a log entry."""
-        # TODO: Open log detail / analysis view
-        pass
+        """Handle double-click on a log entry — open in viewer."""
+        row = index.row()
+        id_item = self.table.item(row, 0)
+        if id_item:
+            log_id = int(id_item.text())
+            self.log_open_requested.emit(log_id)
 
     def statusBar(self):
         """Get the main window status bar."""
