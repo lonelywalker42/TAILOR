@@ -29,6 +29,7 @@ from tailor.ui.vehicle_panel import VehiclePanel
 from tailor.ui.log_panel import LogPanel
 from tailor.ui.config_panel import ConfigurationPanel
 from tailor.ui.log_viewer import LogViewerWidget
+from tailor.ui.ident_panel import IdentPanel
 
 
 class MainWindow(QMainWindow):
@@ -119,11 +120,9 @@ class MainWindow(QMainWindow):
         self.log_viewer = LogViewerWidget()
         self.tab_widget.addTab(self.log_viewer, "日志分析")
 
-        # Placeholder tabs for future modules
-        placeholder2 = QWidget()
-        placeholder2_layout = QVBoxLayout(placeholder2)
-        placeholder2_layout.addWidget(QLabel("系统辨识模块 — 开发中"))
-        self.tab_widget.addTab(placeholder2, "系统辨识")
+        # System identification tab
+        self.ident_panel = IdentPanel()
+        self.tab_widget.addTab(self.ident_panel, "系统辨识")
 
         placeholder3 = QWidget()
         placeholder3_layout = QVBoxLayout(placeholder3)
@@ -226,6 +225,18 @@ class MainWindow(QMainWindow):
 
             # Load into viewer
             self.log_viewer.load_data(raw_data, available, message_fields, segments)
+
+            # Load into identification panel (pass flattened 1D arrays)
+            flat_data = {}
+            for msg_name, df in raw_data.items():
+                if "instance" in df.columns:
+                    df = df[df["instance"] == 0]
+                for col in df.columns:
+                    if col in ("timestamp", "timestamp_s", "instance"):
+                        continue
+                    flat_data[f"{msg_name}.{col}"] = df[col].values
+            self.ident_panel.load_data(flat_data)
+
             self.tab_widget.setCurrentWidget(self.log_viewer)
             self.statusBar().showMessage(f"已加载: {file_name}")
 
