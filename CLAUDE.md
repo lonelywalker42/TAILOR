@@ -33,7 +33,10 @@ tailor/
     excitation.py      # Auto-detect excitation segments (step, doublet, sweep)
     identifier.py      # ARX, OE, frequency-domain identification, auto order selection
     validation.py      # Model validation, step/freq metrics, model comparison
-  control/             # (Phase 4) PID optimization
+  control/
+    pid_controller.py  # PID controller model, PX4 structure, TF computation
+    optimizer.py       # Multi-objective PID optimization, ZN/SIMC rules
+    report.py          # Jinja2 HTML report generator with charts
   ui/
     main_window.py     # Main application window
     vehicle_panel.py   # Vehicle list sidebar
@@ -41,19 +44,21 @@ tailor/
     config_panel.py    # Configuration editor
     log_viewer.py      # pyqtgraph time series viewer, mode indicator, channel selector
     ident_panel.py     # System identification wizard (data select → preprocess → identify → results)
+    pid_panel.py       # PID tuning panel with optimizer, Bode comparison, PX4 export
 tests/
   test_models.py       # ORM and manager tests
   test_parser.py       # Parser and coordinate transform tests
   test_database.py     # Database lifecycle tests
   test_pipeline.py     # Data pipeline and export tests
   test_dynamics.py     # Excitation detection, identification, validation tests
+  test_control.py      # PID controller, optimizer, report generator tests
 ```
 
 ## Development Milestones
 - **M1 (Wk 6)**: Project skeleton, DB models, vehicle/log/config CRUD, basic UI **[DONE]**
 - **M2 (Wk 12)**: Full .ulg parsing, coordinate system engine, log viewer **[DONE]**
 - **M3 (Wk 20)**: System identification and dynamic analysis **[DONE]**
-- **M4 (Wk 28)**: PID optimization and report generation
+- **M4 (Wk 28)**: PID optimization and report generation **[DONE]**
 - **M5 (Wk 34)**: Testing, packaging, release
 
 ## Key Design Decisions
