@@ -619,9 +619,23 @@ class LogViewerWidget(QWidget):
     def clear()
 ```
 
-包含组件：
+### 自动派生通道
+
+`load_data` 调用时自动计算以下处理通道：
+
+| 派生消息名 | 来源 | 字段 | 说明 |
+|-----------|------|------|------|
+| `derived_attitude_deg` | `vehicle_attitude` 四元数 | `roll_deg`, `pitch_deg`, `yaw_deg` | 姿态角（度） |
+| `derived_angular_rate_setpoint` | `vehicle_rates_setpoint` | `roll_rate_sp`, `pitch_rate_sp`, `yaw_rate_sp` | 角速度设定值 |
+| `derived_gyro_rad_s` | `sensor_gyro` | `gyro_x`, `gyro_y`, `gyro_z` | 陀螺仪原始数据 |
+| `derived_velocity_m_s` | `vehicle_local_position` | `vx`, `vy`, `vz` | 速度（m/s） |
+| `derived_position_m` | `vehicle_local_position` | `x`, `y`, `z` | 位置（m） |
+
+派生通道自动选中并绘图，叠加飞行模式色块。
+
+### 包含组件
 - `ModeIndicatorBar`: 飞行模式色标指示条（多旋翼=蓝、固定翼=绿、过渡=橙）
-- `ChannelSelector`: 通道选择器（树形结构，支持预设分组）
+- `ChannelSelector`: 通道选择器（树形结构，支持预设分组，包含"处理通道"分类）
 
 ---
 

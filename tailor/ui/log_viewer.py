@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPen, QBrush
@@ -197,6 +198,7 @@ class ChannelSelector(QWidget):
 
         # Group by category
         categories = {
+            "处理通道 (Derived)": [m for m in available_messages if m.startswith("derived_")],
             "传感器 (Sensor)": ["sensor_accel", "sensor_gyro", "sensor_mag", "airspeed"],
             "姿态 (Attitude)": ["vehicle_attitude", "vehicle_attitude_setpoint", "vehicle_rates_setpoint"],
             "位置 (Position)": ["vehicle_local_position", "vehicle_local_position_setpoint", "vehicle_global_position"],
@@ -396,6 +398,95 @@ class LogViewerWidget(QWidget):
 
         main_layout.addWidget(splitter)
 
+    def _derive_processed_channels(self, raw_data: dict) -> tuple[dict, dict[str, list[str]]]:
+        """Compute derived channels from raw data.
+
+        Returns:
+            (processed_data, processed_fields) where processed_data adds new
+            message entries to raw_data and processed_fields maps those names
+            to their column lists.
+        """
+        import math
+        processed_data = {}
+        processed_fields: dict[str, list[str]] = {}
+
+        # 1. Attitude angles from quaternion (vehicle_attitude.q[0..3])
+        att_df = raw_data.get("vehicle_attitude")
+        if att_df is not None and not att_df.empty:
+            q0 = att_df["q[0]"].values if "q[0]" in att_df.columns else None
+            q1 = att_df["q[1]"].values if "q[1]" in att_df.columns else None
+            q2 = att_df["q[2]"].values if "q[2]" in att_df.columns else None
+            q3 = att_df["q[3]"].values if "q[3]" in att_df.columns else None
+            if all(v is not None for v in [q0, q1, q2, q3]):
+                roll = np.zeros(len(q0))
+                pitch = np.zeros(len(q0))
+                yaw = np.zeros(len(q0))
+                for i in range(len(q0)):
+                    # Roll (x-axis rotation)
+                    sinr_cosp = 2.0 * (q0[i] * q1[i] + q2[i] * q3[i])
+                    cosr_cosp = 1.0 - 2.0 * (q1[i] * q1[i] + q2[i] * q2[i])
+                    roll[i] = math.atan2(sinr_cosp, cosr_cosp)
+                    # Pitch (y-axis rotation)
+                    sinp = 2.0 * (q0[i] * q2[i] - q3[i] * q1[i])
+                    pitch[i] = math.copysign(math.pi / 2, sinp) if abs(sinp) >= 1 else math.asin(sinp)
+                    # Yaw (z-axis rotation)
+                    siny_cosp = 2.0 * (q0[i] * q3[i] + q1[i] * q2[i])
+                    cosy_cosp = 1.0 - 2.0 * (q2[i] * q2[i] + q3[i] * q3[i])
+                    yaw[i] = math.atan2(siny_cosp, cosy_cosp)
+
+                deg = 180.0 / math.pi
+                att_deg_df = pd.DataFrame({
+                    "timestamp_s": att_df["timestamp_s"].values,
+                    "roll_deg": roll * deg,
+                    "pitch_deg": pitch * deg,
+                    "yaw_deg": yaw * deg,
+                })
+                name = "derived_attitude_deg"
+                processed_data[name] = att_deg_df
+                processed_fields[name] = ["roll_deg", "pitch_deg", "yaw_deg"]
+
+        # 2. Angular velocity from vehicle_rates_setpoint or sensor_gyro
+        rates_df = raw_data.get("vehicle_rates_setpoint")
+        if rates_df is not None and not rates_df.empty:
+            cols = [c for c in ["roll", "pitch", "yaw"] if c in rates_df.columns]
+            if cols:
+                name = "derived_angular_rate_setpoint"
+                sub = rates_df[["timestamp_s"] + cols].copy()
+                sub.columns = ["timestamp_s"] + [f"{c}_rate_sp" for c in cols]
+                processed_data[name] = sub
+                processed_fields[name] = [f"{c}_rate_sp" for c in cols]
+
+        gyro_df = raw_data.get("sensor_gyro")
+        if gyro_df is not None and not gyro_df.empty:
+            gyro_cols = [c for c in ["x", "y", "z"] if c in gyro_df.columns]
+            if gyro_cols:
+                name = "derived_gyro_rad_s"
+                sub = gyro_df[["timestamp_s"] + gyro_cols].copy()
+                sub.columns = ["timestamp_s"] + [f"gyro_{c}" for c in gyro_cols]
+                processed_data[name] = sub
+                processed_fields[name] = [f"gyro_{c}" for c in gyro_cols]
+
+        # 3. Velocity from vehicle_local_position
+        lpos_df = raw_data.get("vehicle_local_position")
+        if lpos_df is not None and not lpos_df.empty:
+            vel_cols = [c for c in ["vx", "vy", "vz"] if c in lpos_df.columns]
+            if vel_cols:
+                name = "derived_velocity_m_s"
+                sub = lpos_df[["timestamp_s"] + vel_cols].copy()
+                processed_data[name] = sub
+                processed_fields[name] = vel_cols
+
+        # 4. Position from vehicle_local_position
+        if lpos_df is not None and not lpos_df.empty:
+            pos_cols = [c for c in ["x", "y", "z"] if c in lpos_df.columns]
+            if pos_cols:
+                name = "derived_position_m"
+                sub = lpos_df[["timestamp_s"] + pos_cols].copy()
+                processed_data[name] = sub
+                processed_fields[name] = pos_cols
+
+        return processed_data, processed_fields
+
     def load_data(
         self,
         raw_data: dict,
@@ -414,8 +505,24 @@ class LogViewerWidget(QWidget):
         self._raw_data = raw_data
         self._flight_segments = flight_segments or []
 
+        # Derive processed channels
+        processed_data, processed_fields = self._derive_processed_channels(raw_data)
+        self._raw_data.update(processed_data)
+
+        # Merge processed fields into message_fields for channel selector
+        all_fields = dict(message_fields)
+        all_fields.update(processed_fields)
+
+        # Build available list including processed entries
+        all_available = list(available_messages) + list(processed_fields.keys())
+
         # Populate channel selector
-        self.channel_selector.populate_from_log(available_messages, message_fields)
+        self.channel_selector.populate_from_log(all_available, all_fields)
+
+        # Auto-select derived channels in the channel selector
+        for ch_key, item in self.channel_selector._channel_items.items():
+            if ch_key.startswith("derived_"):
+                item.setCheckState(0, Qt.CheckState.Checked)
 
         # Update mode bar
         if self._flight_segments:
@@ -425,10 +532,101 @@ class LogViewerWidget(QWidget):
 
         # Info
         n_msgs = len(available_messages)
-        total_samples = sum(len(df) for df in raw_data.values())
+        n_processed = len(processed_fields)
+        total_samples = sum(len(df) for df in self._raw_data.values())
+
+        if not message_fields and not processed_fields:
+            self.info_label.setText(
+                f"已加载 {n_msgs} 种消息类型，但未能提取到可用的数据字段。"
+                f"日志中可能不包含标准 PX4 uORB 消息。"
+            )
+        else:
+            self.info_label.setText(
+                f"已加载: {n_msgs} 种原始消息 + {n_processed} 种处理通道, "
+                f"{total_samples:,} 条记录, "
+                f"{len(self._flight_segments)} 个飞行模式段"
+            )
+
+        # Auto-plot derived channels
+        if processed_fields:
+            self._auto_plot_derived()
+
+    def _auto_plot_derived(self):
+        """Auto-plot derived channels grouped by category (PX4 Flight Review style)."""
+        self.plot_widget.clear()
+        self._plot_items.clear()
+
+        # Define plot groups: (title, [field_names], source_message)
+        plot_groups = [
+            ("角速度 Angular Rate", ["roll_rate_sp", "pitch_rate_sp", "yaw_rate_sp"], "derived_angular_rate_setpoint"),
+            ("角速度 Gyro", ["gyro_x", "gyro_y", "gyro_z"], "derived_gyro_rad_s"),
+            ("姿态角 Attitude (deg)", ["roll_deg", "pitch_deg", "yaw_deg"], "derived_attitude_deg"),
+            ("速度 Velocity (m/s)", ["vx", "vy", "vz"], "derived_velocity_m_s"),
+            ("位置 Position (m)", ["x", "y", "z"], "derived_position_m"),
+        ]
+
+        group_idx = 0
+        for title, fields, msg_name in plot_groups:
+            df = self._raw_data.get(msg_name)
+            if df is None or df.empty:
+                continue
+
+            available_fields = [f for f in fields if f in df.columns]
+            if not available_fields:
+                continue
+
+            time = df["timestamp_s"].values if "timestamp_s" in df.columns else df.index.values
+
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title=title)
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            vb = plot_item.getViewBox()
+            self._plot_items.append(plot_item)
+
+            for ch_idx, field in enumerate(available_fields):
+                color = PLOT_COLORS[ch_idx % len(PLOT_COLORS)]
+                pen = pg.mkPen(color=color, width=1.5)
+                values = df[field].values
+
+                # Downsample for display
+                if len(time) > 10000:
+                    step = len(time) // 10000
+                    t_ds = time[::step]
+                    v_ds = values[::step]
+                else:
+                    t_ds = time
+                    v_ds = values
+
+                plot_item.plot(t_ds, v_ds, pen=pen, name=field, autoDownsample=True)
+
+            # Add flight mode overlay
+            if self._flight_segments:
+                for seg in self._flight_segments:
+                    classification = seg.get("classification", "unknown")
+                    color = MODE_COLORS.get(classification, MODE_COLORS["unknown"])
+                    region = pg.LinearRegionItem(
+                        values=[seg["t_start"], seg["t_end"]],
+                        brush=pg.mkBrush(color),
+                        movable=False,
+                    )
+                    region.setZValue(-10)
+                    plot_item.addItem(region)
+
+            # Link x-axis with first plot
+            if group_idx > 0 and self._plot_items:
+                plot_item.setXLink(self._plot_items[0])
+
+            group_idx += 1
+
+        # Add crosshair to first plot
+        if self._cursor_linked and self._plot_items:
+            self._add_crosshair(self._plot_items[0])
+
+        total_points = sum(len(df) for df in self._raw_data.values() if any(c.startswith("derived_") for c in getattr(df, 'columns', [])))
         self.info_label.setText(
-            f"已加载: {n_msgs} 种消息, {total_samples:,} 条记录, "
-            f"{len(self._flight_segments)} 个飞行模式段"
+            f"已绘制 {group_idx} 组处理通道 | "
+            f"飞行模式: 蓝=多旋翼, 绿=固定翼, 橙=过渡"
         )
 
     def _on_plot_clicked(self):
@@ -442,16 +640,19 @@ class LogViewerWidget(QWidget):
         channels = []
         for msg, field in selected:
             # Determine category from message name
-            if "sensor" in msg:
-                category = "state"
-            elif "setpoint" in msg or "control" in msg:
+            if "setpoint" in msg or "control" in msg:
                 category = "control"
             else:
                 category = "state"
+            # Shorter display name for derived channels
+            if msg.startswith("derived_"):
+                display_name = field  # e.g. "roll_deg", "vx"
+            else:
+                display_name = f"{msg}.{field}"
             channels.append(ChannelSpec(
                 message=msg,
                 field=field,
-                display_name=f"{msg}.{field}",
+                display_name=display_name,
                 category=category,
             ))
 
@@ -580,8 +781,7 @@ class LogViewerWidget(QWidget):
         plot_item.addItem(v_line, ignoreBounds=True)
 
         # Connect mouse move
-        def mouse_moved(evt):
-            pos = evt[0]
+        def mouse_moved(pos):
             if plot_item.sceneBoundingRect().contains(pos):
                 mouse_point = plot_item.getViewBox().mapSceneToView(pos)
                 v_line.setPos(mouse_point.x())

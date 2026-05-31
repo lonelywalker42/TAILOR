@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from tailor import __app_name__, __version__
 from tailor.data.database import get_database
+from tailor.data.models import FlightLog
 from tailor.data.manager import VehicleManager, FlightLogManager
 from tailor.ui.vehicle_panel import VehiclePanel
 from tailor.ui.log_panel import LogPanel
@@ -211,12 +212,16 @@ class MainWindow(QMainWindow):
             file_path = log.file_path
             file_name = log.file_name
 
+        if not Path(file_path).exists():
+            self.statusBar().showMessage(f"文件不存在: {file_path}")
+            QMessageBox.warning(self, "文件缺失", f"日志文件不存在:\n{file_path}\n\n可能文件已被移动或删除。")
+            return
+
         self.statusBar().showMessage(f"正在解析 {file_name}...")
         try:
             parser = UlogParser(Path(file_path))
             parser.open()
 
-            # Get all available data
             raw_data = parser.get_core_data()
             available = parser.get_available_messages()
             message_fields = {}
@@ -245,7 +250,10 @@ class MainWindow(QMainWindow):
             self.ident_panel.load_data(flat_data)
 
             self.tab_widget.setCurrentWidget(self.log_viewer)
-            self.statusBar().showMessage(f"已加载: {file_name}")
+            self.statusBar().showMessage(
+                f"已加载: {file_name} | {len(raw_data)} 种核心消息, "
+                f"{len(message_fields)} 种可用消息, {len(segments)} 个飞行模式段"
+            )
 
         except Exception as e:
             self.statusBar().showMessage(f"解析失败: {e}")

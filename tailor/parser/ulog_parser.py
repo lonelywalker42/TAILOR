@@ -56,18 +56,19 @@ class UlogParser:
         duration_s = (ulog.last_timestamp - ulog.start_timestamp) / 1e6
 
         # Count total messages
-        msg_count = sum(m.size for m in ulog.data_list)
+        msg_count = sum(len(m.data.get('timestamp', [])) for m in ulog.data_list)
 
-        # Drop count
-        drop_count = ulog.drop_count if hasattr(ulog, 'drop_count') else 0
+        # Drop count (number of dropout events)
+        drop_count = len(ulog.dropouts)
 
+        info = ulog.msg_info_dict
         meta = {
-            "firmware_version": ulog.get_info("ver_sw", ""),
-            "firmware_version_full": ulog.get_info("ver_sw_release", ""),
-            "airframe_type": ulog.get_info("sys_autostart", ""),
-            "airframe_name": ulog.get_info("sys_autostart", ""),
-            "hardware": ulog.get_info("ver_hw", ""),
-            "uuid": ulog.get_info("mav_sys_id", ""),
+            "firmware_version": info.get("ver_sw", ""),
+            "firmware_version_full": info.get("ver_sw_release", ""),
+            "airframe_type": info.get("sys_autostart", ""),
+            "airframe_name": info.get("sys_autostart", ""),
+            "hardware": info.get("ver_hw", ""),
+            "uuid": info.get("mav_sys_id", ""),
             "duration_s": duration_s,
             "start_time": start_time,
             "end_time": datetime.fromtimestamp(ulog.last_timestamp / 1e6, tz=timezone.utc),
@@ -102,6 +103,9 @@ class UlogParser:
                 t_sec = (data["timestamp"] - ulog.start_timestamp) / 1e6
                 df = pd.DataFrame(data)
                 df["timestamp_s"] = t_sec
+                frames.append(df)
+            else:
+                df = pd.DataFrame(data)
                 frames.append(df)
 
         if not frames:

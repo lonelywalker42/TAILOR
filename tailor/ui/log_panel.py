@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QHeaderView,
     QMenu,
+    QInputDialog,
 )
 
 from tailor.data.database import Database
@@ -128,6 +129,11 @@ class LogPanel(QWidget):
         self.import_btn.clicked.connect(self._on_import_clicked)
         btn_layout.addWidget(self.import_btn)
 
+        self.analyze_btn = QPushButton("分析选中日志")
+        self.analyze_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px 12px; }")
+        self.analyze_btn.clicked.connect(self._on_analyze_selected)
+        btn_layout.addWidget(self.analyze_btn)
+
         self.delete_btn = QPushButton("删除选中")
         self.delete_btn.clicked.connect(self._on_delete_selected)
         btn_layout.addWidget(self.delete_btn)
@@ -153,32 +159,37 @@ class LogPanel(QWidget):
                     flight_mode=mode if mode else None,
                 )
 
-        self.table.setRowCount(len(logs))
-        for row, log in enumerate(logs):
-            self.table.setItem(row, 0, QTableWidgetItem(str(log.id)))
-            self.table.setItem(row, 1, QTableWidgetItem(log.file_name))
+            from tailor.data.manager import VehicleManager
+            v_mgr = VehicleManager(session)
 
-            vehicle_name = ""
-            if log.vehicle_id:
-                with self._db.session_scope() as session:
-                    from tailor.data.manager import VehicleManager
-                    v = VehicleManager(session).get(log.vehicle_id)
+            # Build table rows while session is active (lazy loads need session)
+            rows = []
+            for log in logs:
+                vehicle_name = ""
+                if log.vehicle_id:
+                    v = v_mgr.get(log.vehicle_id)
                     if v:
                         vehicle_name = v.name
-            self.table.setItem(row, 2, QTableWidgetItem(vehicle_name))
+                tags_str = ", ".join(t.name for t in log.tags) if log.tags else ""
+                rows.append((
+                    log.id,
+                    log.file_name,
+                    vehicle_name,
+                    f"{log.duration_s:.1f}",
+                    log.firmware_version,
+                    log.airframe_type,
+                    log.flight_mode_label,
+                    tags_str,
+                    log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else "",
+                    log.notes or "",
+                ))
 
-            self.table.setItem(row, 3, QTableWidgetItem(f"{log.duration_s:.1f}"))
-            self.table.setItem(row, 4, QTableWidgetItem(log.firmware_version))
-            self.table.setItem(row, 5, QTableWidgetItem(log.airframe_type))
-            self.table.setItem(row, 6, QTableWidgetItem(log.flight_mode_label))
-            tags_str = ", ".join(t.name for t in log.tags) if log.tags else ""
-            self.table.setItem(row, 7, QTableWidgetItem(tags_str))
-            self.table.setItem(row, 8, QTableWidgetItem(
-                log.created_at.strftime("%Y-%m-%d %H:%M") if log.created_at else ""
-            ))
-            self.table.setItem(row, 9, QTableWidgetItem(log.notes))
+        self.table.setRowCount(len(rows))
+        for row, values in enumerate(rows):
+            for col, val in enumerate(values):
+                self.table.setItem(row, col, QTableWidgetItem(str(val)))
 
-        self.count_label.setText(f"共 {len(logs)} 条日志")
+        self.count_label.setText(f"共 {len(rows)} 条日志")
 
     def filter_by_vehicle(self, vehicle_id: int):
         """Filter logs by vehicle."""
@@ -261,27 +272,101 @@ class LogPanel(QWidget):
     def _show_context_menu(self, pos):
         """Show context menu for log table."""
         menu = QMenu(self)
+        menu.addAction("分析日志", self._on_analyze_selected)
         menu.addAction("查看详情", self._on_view_details)
+        menu.addSeparator()
         menu.addAction("添加标签", self._on_add_tag)
         menu.addAction("关联飞行器", self._on_associate_vehicle)
         menu.addSeparator()
         menu.addAction("删除", self._on_delete_selected)
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    def _get_selected_log_id(self) -> Optional[int]:
+        """Get the log_id of the first selected row, or None."""
+        rows = set(idx.row() for idx in self.table.selectedIndexes())
+        if not rows:
+            return None
+        row = min(rows)
+        id_item = self.table.item(row, 0)
+        return int(id_item.text()) if id_item else None
+
     def _on_view_details(self):
         """Show detailed view of selected log."""
-        # TODO: Implement detailed log viewer
-        pass
+        log_id = self._get_selected_log_id()
+        if log_id is None:
+            return
+
+        with self._db.session_scope() as session:
+            mgr = FlightLogManager(session)
+            log = mgr.get(log_id)
+            if not log:
+                return
+            from tailor.data.manager import VehicleManager
+            vehicle_name = ""
+            if log.vehicle_id:
+                v = VehicleManager(session).get(log.vehicle_id)
+                if v:
+                    vehicle_name = v.name
+            tags_str = ", ".join(t.name for t in log.tags) if log.tags else "无"
+            file_name = log.file_name
+            info = (
+                f"文件名: {log.file_name}\n"
+                f"飞行器: {vehicle_name or '未关联'}\n"
+                f"时长: {log.duration_s:.1f} 秒\n"
+                f"固件版本: {log.firmware_version}\n"
+                f"机架类型: {log.airframe_type}\n"
+                f"飞行模式: {log.flight_mode_label}\n"
+                f"消息数: {log.message_count}\n"
+                f"丢包率: {log.drop_rate:.4f}\n"
+                f"标签: {tags_str}\n"
+                f"导入时间: {log.created_at}\n"
+                f"文件路径: {log.file_path}\n"
+                f"备注: {log.notes or '无'}"
+            )
+
+        QMessageBox.information(self, f"日志详情 — {file_name}", info)
 
     def _on_add_tag(self):
         """Add tag to selected log."""
-        # TODO: Implement tag dialog
-        pass
+        log_id = self._get_selected_log_id()
+        if log_id is None:
+            return
+
+        tag_name, ok = QInputDialog.getText(self, "添加标签", "标签名称:")
+        if not ok or not tag_name.strip():
+            return
+
+        with self._db.session_scope() as session:
+            FlightLogManager(session).add_tag(log_id, tag_name.strip())
+
+        self.refresh()
 
     def _on_associate_vehicle(self):
         """Associate selected log with a vehicle."""
-        # TODO: Implement vehicle association dialog
-        pass
+        log_id = self._get_selected_log_id()
+        if log_id is None:
+            return
+
+        with self._db.session_scope() as session:
+            from tailor.data.manager import VehicleManager
+            vehicles = VehicleManager(session).list_all()
+            if not vehicles:
+                QMessageBox.information(self, "无飞行器", "请先创建一个飞行器。")
+                return
+            vehicle_names = [v.name for v in vehicles]
+            vehicle_ids = [v.id for v in vehicles]
+
+        name, ok = QInputDialog.getItem(self, "关联飞行器", "选择飞行器:", vehicle_names, 0, False)
+        if not ok:
+            return
+
+        vid = vehicle_ids[vehicle_names.index(name)]
+        with self._db.session_scope() as session:
+            log = FlightLogManager(session).get(log_id)
+            if log:
+                log.vehicle_id = vid
+
+        self.refresh()
 
     def _on_log_double_clicked(self, index):
         """Handle double-click on a log entry — open in viewer."""
@@ -290,6 +375,14 @@ class LogPanel(QWidget):
         if id_item:
             log_id = int(id_item.text())
             self.log_open_requested.emit(log_id)
+
+    def _on_analyze_selected(self):
+        """Analyze the selected log entry."""
+        log_id = self._get_selected_log_id()
+        if log_id is None:
+            QMessageBox.information(self, "提示", "请先选择一条日志。")
+            return
+        self.log_open_requested.emit(log_id)
 
     def statusBar(self):
         """Get the main window status bar."""
