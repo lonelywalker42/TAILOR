@@ -284,22 +284,369 @@ class CoordFrame(Enum):
 
 ---
 
-## 已规划模块（待实现）
+## tailor.parser.data_pipeline
 
-### tailor.dynamics（Phase 3）
+数据管线 — 通道选择、时间窗口、坐标变换、重采样、滤波。
 
-- `ExcitationDetector`: 激励信号自动检测
-- `SystemIdentifier`: 线性系统辨识 (ARX, OE, 子空间, 频域)
-- `DynamicPerformanceAnalyzer`: 时域/频域指标提取
+### ChannelSpec
 
-### tailor.control（Phase 4）
+```python
+@dataclass
+class ChannelSpec:
+    message: str           # uORB 消息名，如 "vehicle_attitude"
+    field: str             # 字段名，如 "q[0]"
+    display_name: str      # 显示名，如 "Attitude Qw"
+    unit: str = ""         # 物理单位
+    category: str = ""     # "state", "control", "derived"
+    coord_frame: str = CoordFrame.FRD
+```
 
-- `PIDController`: PX4 标准 PID 结构建模
-- `PIDOptimizer`: 多目标优化调参
-- `GainScheduler`: 增益调度表管理
+### PipelineConfig
 
-### tailor.ui.log_viewer（Phase 2）
+```python
+@dataclass
+class PipelineConfig:
+    channels: list[ChannelSpec]
+    t_start: Optional[float]          # 时间窗口起点 (秒)
+    t_end: Optional[float]            # 时间窗口终点 (秒)
+    target_frame: CoordFrame          # 目标坐标系
+    resample_rate: Optional[float]    # 重采样频率 (Hz)
+    resample_method: ResampleMethod   # 插值方法
+    flight_phase: Optional[str]       # "multirotor", "fixedwing", "transition"
+    apply_lowpass: bool               # 是否低通滤波
+    lowpass_cutoff: Optional[float]   # 截止频率 (Hz)
+    detrend: bool                     # 是否去趋势
+```
 
-- `LogViewerWidget`: pyqtgraph 时序绘图
-- `ModeIndicatorBar`: 飞行模式色标指示条
-- `ChannelSelector`: 通道选择器
+### DataPipeline
+
+```python
+class DataPipeline:
+    def run(raw_data, config, attitude_quat=None, flight_mode_segments=None) -> PipelineResult
+```
+
+### PipelineResult
+
+```python
+@dataclass
+class PipelineResult:
+    data: pd.DataFrame               # 对齐后的数据 (列=通道显示名)
+    metadata: dict                   # 管线配置摘要
+    channel_specs: list[ChannelSpec]
+```
+
+---
+
+## tailor.parser.export
+
+数据导出 — CSV、MAT、Parquet。
+
+```python
+class DataExporter:
+    def export_csv(result: PipelineResult, file_path, include_header=True, separator=",") -> Path
+    def export_mat(result: PipelineResult, file_path) -> Path
+    def export_parquet(result: PipelineResult, file_path) -> Path
+```
+
+---
+
+## tailor.dynamics.excitation
+
+激励段自动检测。
+
+### ExcitationSegment
+
+```python
+@dataclass
+class ExcitationSegment:
+    t_start: float
+    t_end: float
+    duration: float
+    excitation_type: ExcitationType   # STEP, DOUBLET, SWEEP, HIGH_VARIANCE
+    channel: str
+    quality_score: float              # 0-1
+    amplitude: float
+```
+
+### ExcitationDetector
+
+```python
+class ExcitationDetector:
+    def detect(time, signal, channel_name="") -> list[ExcitationSegment]
+    def _detect_steps(time, signal) -> list[ExcitationSegment]
+    def _detect_doublets(time, signal) -> list[ExcitationSegment]
+    def _detect_high_variance(time, signal) -> list[ExcitationSegment]
+    def _detect_sweeps(time, signal) -> list[ExcitationSegment]
+```
+
+### 便捷函数
+
+```python
+find_identification_segments(time, signals, min_duration=0.5) -> list[ExcitationSegment]
+```
+
+---
+
+## tailor.dynamics.identifier
+
+系统辨识 — ARX、OE、频域方法。
+
+### TransferFunctionModel
+
+```python
+@dataclass
+class TransferFunctionModel:
+    num: np.ndarray              # 分子系数
+    den: np.ndarray              # 分母系数
+    dt: float                    # 采样时间
+    method: IdentificationMethod # ARX, OE, FREQUENCY_DOMAIN
+    fit_percent: float           # VAF 拟合率
+    aic: float                   # AIC 准则
+    bic: float                   # BIC 准则
+    order_num: int               # 分子阶次
+    order_den: int               # 分母阶次
+    input_channel: str
+    output_channel: str
+
+    def simulate(u) -> np.ndarray
+    def get_poles() -> np.ndarray
+    def get_zeros() -> np.ndarray
+    def is_stable() -> bool
+    def to_dict() -> dict
+    def from_dict(d) -> TransferFunctionModel
+```
+
+### SystemIdentifier
+
+```python
+class SystemIdentifier:
+    def identify_arx(u, y, na=2, nb=2, nk=0, dt=0.01, ...) -> TransferFunctionModel
+    def identify_oe(u, y, nf=2, nb=2, nk=0, dt=0.01, ...) -> TransferFunctionModel
+    def identify_frequency(u, y, order=4, dt=0.01, ...) -> TransferFunctionModel
+    def auto_select_order(u, y, max_order=10, dt=0.01, method=IdentificationMethod.ARX) -> tuple[int, TransferFunctionModel]
+```
+
+---
+
+## tailor.dynamics.validation
+
+模型验证与性能指标。
+
+### StepResponseMetrics
+
+```python
+@dataclass
+class StepResponseMetrics:
+    rise_time_s: float
+    settling_time_s: float
+    overshoot_pct: float
+    dc_gain: float
+    peak_value: float
+    peak_time_s: float
+```
+
+### FrequencyMetrics
+
+```python
+@dataclass
+class FrequencyMetrics:
+    bandwidth_hz: float
+    gain_margin_db: float
+    phase_margin_deg: float
+    dc_gain_db: float
+    resonance_peak_db: float
+    resonance_freq_hz: float
+```
+
+### ModelValidator
+
+```python
+class ModelValidator:
+    @staticmethod
+    def step_response_metrics(model, t_duration=10.0) -> StepResponseMetrics
+    def frequency_metrics(model) -> FrequencyMetrics
+    def residual_analysis(model, u, y) -> dict
+    def compare_models(models, ranking="bic") -> ModelComparison
+```
+
+### 便捷函数
+
+```python
+compute_step_response_data(model, t_duration) -> (time, response)
+compute_frequency_response_data(model) -> (freq_hz, mag_db, phase_deg)
+compute_bode_comparison(models, labels) -> dict
+```
+
+---
+
+## tailor.control.pid_controller
+
+PX4 标准 PID 控制器模型。
+
+### PIDGains
+
+```python
+@dataclass
+class PIDGains:
+    kp: float = 0.0
+    ki: float = 0.0
+    kd: float = 0.0
+    kff: float = 0.0
+```
+
+### PIDStructure
+
+```python
+class PIDStructure(Enum):
+    P = "p"
+    P_FF = "p_ff"
+    PI_FF = "pi_ff"
+    PID_FF = "pid_ff"
+```
+
+### ControllerParams
+
+```python
+@dataclass
+class ControllerParams:
+    axes: dict[str, AxisConfig]
+
+    def to_px4_params() -> dict[str, float]
+    def from_px4_params(params) -> ControllerParams
+```
+
+### PIDController
+
+```python
+class PIDController:
+    def __init__(self, structure=PIDStructure.PI_FF)
+    def _controller_tf(gains) -> tuple[np.ndarray, np.ndarray]
+    def get_open_loop_tf(gains, plant_tf) -> tuple
+    def get_closed_loop_tf(gains, plant_tf) -> tuple
+    def simulate_closed_loop(gains, plant_tf, ref, dt) -> (time, output, control)
+    def evaluate_performance(gains, plant_tf, dt) -> dict
+```
+
+### 便捷函数
+
+```python
+default_rate_gains(axis: ControlAxis) -> AxisConfig
+extract_px4_params(px4_params, axis) -> PIDGains
+```
+
+---
+
+## tailor.control.optimizer
+
+多目标 PID 优化。
+
+### TuningObjective
+
+```python
+@dataclass
+class TuningObjective:
+    target_bandwidth_hz: float = 5.0
+    min_phase_margin_deg: float = 35.0
+    max_overshoot_pct: float = 15.0
+    max_settling_time_s: float = 0.5
+    max_control_effort: float = 1.0
+    weight_bandwidth: float = 1.0
+    weight_margin: float = 1.0
+    weight_overshoot: float = 1.0
+    weight_settling: float = 0.5
+```
+
+### PIDOptimizer
+
+```python
+class PIDOptimizer:
+    def optimize(plant_tf, initial_gains, objective, axis, structure, dt, method) -> TuningResult
+    def optimize_all_axes(plant_tfs, initial_params, objective, dt, method) -> dict[str, TuningResult]
+```
+
+### TuningMethod
+
+```python
+class TuningMethod(Enum):
+    ZIEGLER_NICHOLS = "ziegler_nichols"
+    SIMC = "simc"
+    OPTIMIZER = "optimizer"
+    MANUAL = "manual"
+```
+
+### 便捷函数
+
+```python
+quick_tune(plant_tf, method, axis, dt) -> TuningResult
+```
+
+---
+
+## tailor.control.report
+
+HTML/PDF 报告生成。
+
+### ReportGenerator
+
+```python
+class ReportGenerator:
+    def __init__(self, version="0.1.0")
+    def generate_html(title, flight_info, key_metrics, charts, identification_results,
+                      pid_comparison, pid_performance, recommendations, output_path) -> str
+    def generate_pdf(html_content, output_path) -> Path
+    def figure_to_base64(fig) -> str
+    def plot_time_series(time, signals, title, xlabel, ylabel) -> str
+    def plot_comparison(time_before, y_before, time_after, y_after, title, ...) -> str
+    def plot_bode(freq_hz, mag_db, phase_deg, title, label) -> str
+```
+
+### 便捷函数
+
+```python
+build_flight_report(log_metadata, channels, time, identification_results,
+                    tuning_result, output_path) -> str
+```
+
+---
+
+## tailor.ui.log_viewer
+
+时序数据查看器。
+
+```python
+class LogViewerWidget(QWidget):
+    def load_data(raw_data, available_messages, message_fields, flight_mode_segments)
+    def clear()
+```
+
+包含组件：
+- `ModeIndicatorBar`: 飞行模式色标指示条（多旋翼=蓝、固定翼=绿、过渡=橙）
+- `ChannelSelector`: 通道选择器（树形结构，支持预设分组）
+
+---
+
+## tailor.ui.ident_panel
+
+系统辨识面板（向导式界面）。
+
+```python
+class IdentPanel(QWidget):
+    def load_data(flat_data: dict[str, np.ndarray])
+    def clear()
+```
+
+流程：数据选择 → 激励检测 → 预处理 → 模型配置 → 执行辨识 → 结果展示
+
+---
+
+## tailor.ui.pid_panel
+
+PID 调参面板。
+
+```python
+class PIDPanel(QWidget):
+    def load_plant_model(model: TransferFunctionModel)
+    def clear()
+```
+
+功能：增益编辑、优化目标设置、调参方法选择、阶跃响应/伯德图对比、PX4 参数导出

@@ -18,7 +18,7 @@ TAILOR 采用分层架构设计，各层职责清晰，通过定义良好的接�
 │  Database │ Managers │ Config │ Models               │
 ├─────────────────────────────────────────────────────┤
 │                 External Libraries                   │
-│  pyulog │ SciPy │ python-control │ SIPPY │ NumPy     │
+│  pyulog │ SciPy │ python-control │ NumPy │ pandas    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -125,7 +125,7 @@ LogImportWorker (QThread)
   └── progress/finished 信号 → UI 更新
 ```
 
-### 坐标变换流程（Phase 2 完整实现）
+### 坐标变换流程
 
 ```
 原始 uLog 数据 (FRD body frame)
