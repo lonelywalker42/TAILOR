@@ -9,7 +9,7 @@ TAILOR (Tail-sitter Analysis, Identification, Log & Optimization Resource) is a 
 - **Plotting**: pyqtgraph + OpenGL 3D
 - **Log parsing**: pyulog
 - **Numerics**: NumPy, SciPy, pandas
-- **Control/ID**: python-control, SIPPY
+- **Control/ID**: python-control
 - **Database**: SQLite + SQLAlchemy
 - **Reports**: Jinja2 + WeasyPrint
 
@@ -52,6 +52,13 @@ tests/
   test_pipeline.py     # Data pipeline and export tests
   test_dynamics.py     # Excitation detection, identification, validation tests
   test_control.py      # PID controller, optimizer, report generator tests
+  test_integration.py  # Cross-module pipeline verification
+  test_gui.py          # GUI widget smoke tests
+scripts/
+  build.py             # PyInstaller build script
+.github/
+  workflows/
+    ci.yml             # GitHub Actions CI (lint + test)
 ```
 
 ## Development Milestones
@@ -59,7 +66,7 @@ tests/
 - **M2 (Wk 12)**: Full .ulg parsing, coordinate system engine, log viewer **[DONE]**
 - **M3 (Wk 20)**: System identification and dynamic analysis **[DONE]**
 - **M4 (Wk 28)**: PID optimization and report generation **[DONE]**
-- **M5 (Wk 34)**: Testing, packaging, release
+- **M5 (Wk 34)**: Testing, packaging, release **[DONE]**
 
 ## Key Design Decisions
 - SQLite with WAL mode for local-first data storage

@@ -30,9 +30,6 @@ dependencies = [
     "SQLAlchemy>=2.0",
     # Control & identification
     "control>=0.10",
-    "SIPPY>=1.4",
-    # Optimization
-    # "pygmo>=2.19",  # optional, heavy dependency
     # Report generation
     "Jinja2>=3.1",
     # 3D visualization
@@ -58,7 +55,7 @@ tailor = "tailor.main:main"
 
 [build-system]
 requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["tailor*"]
@@ -73,3 +70,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 qt_api = "pyside6"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
