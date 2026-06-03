@@ -224,7 +224,15 @@ class PIDPanel(QWidget):
         settings_layout.addWidget(self.status_label)
 
         settings_layout.addStretch()
-        splitter.addWidget(settings_widget)
+
+        # Wrap settings in scroll area for smaller windows
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(settings_widget)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumWidth(280)
+        scroll_area.setMaximumWidth(400)
+        splitter.addWidget(scroll_area)
 
         # Right: Results
         results_widget = QWidget()

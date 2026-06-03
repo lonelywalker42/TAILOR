@@ -130,12 +130,14 @@ class IdentPanel(QWidget):
 
     def _setup_ui(self):
         main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(4, 4, 4, 4)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left: Settings
+        # Left: Settings (wrapped in scroll area for small windows)
         settings_widget = QWidget()
         settings_layout = QVBoxLayout(settings_widget)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
 
         # Step 1: Data Selection
         data_group = QGroupBox("1. 数据选择")
@@ -154,7 +156,8 @@ class IdentPanel(QWidget):
         data_form.addRow(self.detect_btn)
 
         self.segment_list = QListWidget()
-        self.segment_list.setMaximumHeight(120)
+        self.segment_list.setMinimumHeight(80)
+        self.segment_list.setMaximumHeight(160)
         self.segment_list.itemClicked.connect(self._on_segment_selected)
         data_form.addRow("检测到的段:", self.segment_list)
 
@@ -237,7 +240,15 @@ class IdentPanel(QWidget):
 
         settings_layout.addStretch()
 
-        splitter.addWidget(settings_widget)
+        # Wrap settings in scroll area
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(settings_widget)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMinimumWidth(280)
+        scroll_area.setMaximumWidth(400)
+
+        splitter.addWidget(scroll_area)
 
         # Right: Results
         results_widget = QWidget()
@@ -335,6 +346,76 @@ class IdentPanel(QWidget):
                 break
 
         self.status_label.setText(f"已加载 {len(raw_data)} 个通道")
+
+    def auto_setup_pairs(self, flat_data: dict, time: Optional[np.ndarray] = None):
+        """Auto-detect excitation and pre-fill channel pairs for system identification.
+
+        Called after log load to prepare the ident panel for user confirmation.
+
+        Args:
+            flat_data: Dict of channel_name -> numpy array (same as load_data).
+            time: Time array for excitation detection.
+        """
+        # Update internal data with time
+        self._raw_data = flat_data
+        self._time = time
+
+        # Standard input/output pairs for rate and attitude identification
+        STANDARD_PAIRS = [
+            ("actuator_controls.control[0]", "sensor_gyro.x", "Roll 速率"),
+            ("actuator_controls.control[1]", "sensor_gyro.y", "Pitch 速率"),
+            ("actuator_controls.control[3]", "sensor_gyro.z", "Yaw 速率"),
+            ("actuator_controls.control[0]", "derived_attitude_deg.roll_deg", "Roll 角度"),
+            ("actuator_controls.control[1]", "derived_attitude_deg.pitch_deg", "Pitch 角度"),
+        ]
+
+        # Find best available pair
+        best_pair = None
+        best_score = -1
+        for input_ch, output_ch, label in STANDARD_PAIRS:
+            if input_ch in flat_data and output_ch in flat_data:
+                # Prefer rate control pairs (they have better excitation)
+                score = 2 if "gyro" in output_ch else 1
+                if score > best_score:
+                    best_score = score
+                    best_pair = (input_ch, output_ch, label)
+
+        if best_pair is None:
+            self.status_label.setText("未找到标准通道对，请手动选择")
+            return
+
+        input_ch, output_ch, label = best_pair
+
+        # Set combo selections
+        input_idx = self.input_combo.findText(input_ch)
+        if input_idx >= 0:
+            self.input_combo.setCurrentIndex(input_idx)
+
+        output_idx = self.output_combo.findText(output_ch)
+        if output_idx >= 0:
+            self.output_combo.setCurrentIndex(output_idx)
+
+        # Auto-detect excitation on output channel
+        output_data = flat_data.get(output_ch)
+        if output_data is not None and time is not None:
+            detector = ExcitationDetector()
+            try:
+                segments = detector.detect(time, np.asarray(output_data).flatten(), channel_name=output_ch)
+                self.segment_list.clear()
+                for seg in segments:
+                    item = QListWidgetItem(
+                        f"[{seg.t_start:.2f}-{seg.t_end:.2f}s] "
+                        f"{seg.excitation_type.value} q={seg.quality_score:.2f}"
+                    )
+                    item.setData(Qt.ItemDataRole.UserRole, seg)
+                    self.segment_list.addItem(item)
+                # Auto-select best segment
+                if self.segment_list.count() > 0:
+                    self.segment_list.setCurrentRow(0)
+            except Exception:
+                pass
+
+        self.status_label.setText(f"已自动配置: {label} ({input_ch} → {output_ch})")
 
     def _on_detect_excitation(self):
         """Detect excitation segments in the selected output channel."""

@@ -238,16 +238,31 @@ class MainWindow(QMainWindow):
             # Load into viewer
             self.log_viewer.load_data(raw_data, available, message_fields, segments)
 
-            # Load into identification panel (pass flattened 1D arrays)
+            # Load into identification panel (pass flattened 1D arrays + time)
             flat_data = {}
+            time_array = None
             for msg_name, df in raw_data.items():
                 if "instance" in df.columns:
                     df = df[df["instance"] == 0]
+                if time_array is None and "timestamp_s" in df.columns and len(df) > 0:
+                    time_array = df["timestamp_s"].values
                 for col in df.columns:
                     if col in ("timestamp", "timestamp_s", "instance"):
                         continue
                     flat_data[f"{msg_name}.{col}"] = df[col].values
-            self.ident_panel.load_data(flat_data)
+
+            # Also add derived channels to flat_data for ident panel
+            derived_data = self.log_viewer._raw_data
+            for dname, ddf in derived_data.items():
+                if dname.startswith("derived_") and hasattr(ddf, 'columns'):
+                    for col in ddf.columns:
+                        if col in ("timestamp_s",):
+                            continue
+                        flat_data[f"{dname}.{col}"] = ddf[col].values
+
+            self.ident_panel.load_data(flat_data, time=time_array)
+            # Auto-detect excitation and pre-fill channel pairs
+            self.ident_panel.auto_setup_pairs(flat_data, time=time_array)
 
             self.tab_widget.setCurrentWidget(self.log_viewer)
             self.statusBar().showMessage(

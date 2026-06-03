@@ -485,6 +485,69 @@ class LogViewerWidget(QWidget):
                 processed_data[name] = sub
                 processed_fields[name] = pos_cols
 
+        # 5. Attitude setpoint angles from quaternion (vehicle_attitude_setpoint.q_d[0..3])
+        att_sp_df = raw_data.get("vehicle_attitude_setpoint")
+        if att_sp_df is not None and not att_sp_df.empty:
+            qd_cols = ["q_d[0]", "q_d[1]", "q_d[2]", "q_d[3]"]
+            if all(c in att_sp_df.columns for c in qd_cols):
+                q0 = att_sp_df["q_d[0]"].values
+                q1 = att_sp_df["q_d[1]"].values
+                q2 = att_sp_df["q_d[2]"].values
+                q3 = att_sp_df["q_d[3]"].values
+                roll_sp = np.zeros(len(q0))
+                pitch_sp = np.zeros(len(q0))
+                yaw_sp = np.zeros(len(q0))
+                for i in range(len(q0)):
+                    sinr_cosp = 2.0 * (q0[i] * q1[i] + q2[i] * q3[i])
+                    cosr_cosp = 1.0 - 2.0 * (q1[i] * q1[i] + q2[i] * q2[i])
+                    roll_sp[i] = math.atan2(sinr_cosp, cosr_cosp)
+                    sinp = 2.0 * (q0[i] * q2[i] - q3[i] * q1[i])
+                    pitch_sp[i] = math.copysign(math.pi / 2, sinp) if abs(sinp) >= 1 else math.asin(sinp)
+                    siny_cosp = 2.0 * (q0[i] * q3[i] + q1[i] * q2[i])
+                    cosy_cosp = 1.0 - 2.0 * (q2[i] * q2[i] + q3[i] * q3[i])
+                    yaw_sp[i] = math.atan2(siny_cosp, cosy_cosp)
+                deg = 180.0 / math.pi
+                sp_df = pd.DataFrame({
+                    "timestamp_s": att_sp_df["timestamp_s"].values,
+                    "roll_deg_sp": roll_sp * deg,
+                    "pitch_deg_sp": pitch_sp * deg,
+                    "yaw_deg_sp": yaw_sp * deg,
+                })
+                name = "derived_attitude_setpoint_deg"
+                processed_data[name] = sp_df
+                processed_fields[name] = ["roll_deg_sp", "pitch_deg_sp", "yaw_deg_sp"]
+
+        # 6. Actuator controls (roll/pitch/yaw/thrust)
+        ac_df = raw_data.get("actuator_controls")
+        if ac_df is not None and not ac_df.empty:
+            ctrl_cols = [c for c in ["control[0]", "control[1]", "control[2]", "control[3]"] if c in ac_df.columns]
+            if ctrl_cols:
+                labels = {"control[0]": "roll_ctrl", "control[1]": "pitch_ctrl",
+                          "control[2]": "thrust_ctrl", "control[3]": "yaw_ctrl"}
+                sub = ac_df[["timestamp_s"] + ctrl_cols].copy()
+                sub.columns = ["timestamp_s"] + [labels[c] for c in ctrl_cols]
+                name = "derived_actuator_controls"
+                processed_data[name] = sub
+                processed_fields[name] = [labels[c] for c in ctrl_cols]
+
+        # 7. Velocity setpoint from vehicle_local_position_setpoint
+        lpos_sp_df = raw_data.get("vehicle_local_position_setpoint")
+        if lpos_sp_df is not None and not lpos_sp_df.empty:
+            vel_sp_cols = [c for c in ["vx", "vy", "vz"] if c in lpos_sp_df.columns]
+            if vel_sp_cols:
+                name = "derived_velocity_setpoint"
+                sub = lpos_sp_df[["timestamp_s"] + vel_sp_cols].copy()
+                sub.columns = ["timestamp_s"] + [f"{c}_sp" for c in vel_sp_cols]
+                processed_data[name] = sub
+                processed_fields[name] = [f"{c}_sp" for c in vel_sp_cols]
+            pos_sp_cols = [c for c in ["x", "y", "z"] if c in lpos_sp_df.columns]
+            if pos_sp_cols:
+                name = "derived_position_setpoint"
+                sub = lpos_sp_df[["timestamp_s"] + pos_sp_cols].copy()
+                sub.columns = ["timestamp_s"] + [f"{c}_sp" for c in pos_sp_cols]
+                processed_data[name] = sub
+                processed_fields[name] = [f"{c}_sp" for c in pos_sp_cols]
+
         return processed_data, processed_fields
 
     def load_data(
@@ -552,80 +615,211 @@ class LogViewerWidget(QWidget):
             self._auto_plot_derived()
 
     def _auto_plot_derived(self):
-        """Auto-plot derived channels grouped by category (PX4 Flight Review style)."""
+        """Auto-plot derived channels with setpoint vs estimated overlaid."""
         self.plot_widget.clear()
         self._plot_items.clear()
 
-        # Define plot groups: (title, [field_names], source_message)
-        plot_groups = [
-            ("角速度 Angular Rate", ["roll_rate_sp", "pitch_rate_sp", "yaw_rate_sp"], "derived_angular_rate_setpoint"),
-            ("角速度 Gyro", ["gyro_x", "gyro_y", "gyro_z"], "derived_gyro_rad_s"),
-            ("姿态角 Attitude (deg)", ["roll_deg", "pitch_deg", "yaw_deg"], "derived_attitude_deg"),
-            ("速度 Velocity (m/s)", ["vx", "vy", "vz"], "derived_velocity_m_s"),
-            ("位置 Position (m)", ["x", "y", "z"], "derived_position_m"),
-        ]
+        # Axis colors: Roll=Red, Pitch=Green, Yaw=Blue
+        AXIS_COLORS = {
+            "roll": (228, 26, 28),
+            "pitch": (77, 175, 74),
+            "yaw": (55, 126, 184),
+            "x": (228, 26, 28),
+            "y": (77, 175, 74),
+            "z": (55, 126, 184),
+            "vx": (228, 26, 28),
+            "vy": (77, 175, 74),
+            "vz": (55, 126, 184),
+            "thrust": (152, 78, 163),
+        }
+
+        def _downsample(time, values, max_pts=10000):
+            if len(time) > max_pts:
+                step = len(time) // max_pts
+                return time[::step], values[::step]
+            return time, values
+
+        def _add_mode_overlay(plot_item):
+            if not self._flight_segments:
+                return
+            for seg in self._flight_segments:
+                classification = seg.get("classification", "unknown")
+                color = MODE_COLORS.get(classification, MODE_COLORS["unknown"])
+                region = pg.LinearRegionItem(
+                    values=[seg["t_start"], seg["t_end"]],
+                    brush=pg.mkBrush(color),
+                    movable=False,
+                )
+                region.setZValue(-10)
+                plot_item.addItem(region)
 
         group_idx = 0
-        for title, fields, msg_name in plot_groups:
-            df = self._raw_data.get(msg_name)
-            if df is None or df.empty:
-                continue
 
-            available_fields = [f for f in fields if f in df.columns]
-            if not available_fields:
-                continue
-
-            time = df["timestamp_s"].values if "timestamp_s" in df.columns else df.index.values
-
-            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title=title)
+        # --- Plot 1: Angular Rate (gyro solid + rate setpoint dashed) ---
+        gyro_df = self._raw_data.get("derived_gyro_rad_s")
+        rate_sp_df = self._raw_data.get("derived_angular_rate_setpoint")
+        if gyro_df is not None and not gyro_df.empty:
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title="角速度 Angular Rate (rad/s)")
             plot_item.setLabel("bottom", "时间", units="s")
             plot_item.showGrid(x=True, y=True, alpha=0.3)
             plot_item.addLegend(offset=(10, 10))
-            vb = plot_item.getViewBox()
             self._plot_items.append(plot_item)
 
-            for ch_idx, field in enumerate(available_fields):
-                color = PLOT_COLORS[ch_idx % len(PLOT_COLORS)]
-                pen = pg.mkPen(color=color, width=1.5)
-                values = df[field].values
+            # Measured gyro (solid lines)
+            gyro_map = {"gyro_x": "Roll", "gyro_y": "Pitch", "gyro_z": "Yaw"}
+            for field, label in gyro_map.items():
+                if field in gyro_df.columns:
+                    t, v = _downsample(gyro_df["timestamp_s"].values, gyro_df[field].values)
+                    axis_key = label.lower()
+                    color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                    pen = pg.mkPen(color=color, width=1.5)
+                    plot_item.plot(t, v, pen=pen, name=f"{label} (实测)")
 
-                # Downsample for display
-                if len(time) > 10000:
-                    step = len(time) // 10000
-                    t_ds = time[::step]
-                    v_ds = values[::step]
-                else:
-                    t_ds = time
-                    v_ds = values
+            # Rate setpoint (dashed lines, same colors)
+            if rate_sp_df is not None and not rate_sp_df.empty:
+                sp_map = {"roll_rate_sp": "Roll", "pitch_rate_sp": "Pitch", "yaw_rate_sp": "Yaw"}
+                for field, label in sp_map.items():
+                    if field in rate_sp_df.columns:
+                        t, v = _downsample(rate_sp_df["timestamp_s"].values, rate_sp_df[field].values)
+                        axis_key = label.lower()
+                        color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                        pen = pg.mkPen(color=color, width=1.5, style=Qt.PenStyle.DashLine)
+                        plot_item.plot(t, v, pen=pen, name=f"{label} (指令)")
 
-                plot_item.plot(t_ds, v_ds, pen=pen, name=field, autoDownsample=True)
+            _add_mode_overlay(plot_item)
+            group_idx += 1
 
-            # Add flight mode overlay
-            if self._flight_segments:
-                for seg in self._flight_segments:
-                    classification = seg.get("classification", "unknown")
-                    color = MODE_COLORS.get(classification, MODE_COLORS["unknown"])
-                    region = pg.LinearRegionItem(
-                        values=[seg["t_start"], seg["t_end"]],
-                        brush=pg.mkBrush(color),
-                        movable=False,
-                    )
-                    region.setZValue(-10)
-                    plot_item.addItem(region)
+        # --- Plot 2: Attitude (estimated solid + setpoint dashed) ---
+        att_df = self._raw_data.get("derived_attitude_deg")
+        att_sp_df = self._raw_data.get("derived_attitude_setpoint_deg")
+        if att_df is not None and not att_df.empty:
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title="姿态角 Attitude (deg)")
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            self._plot_items.append(plot_item)
 
-            # Link x-axis with first plot
-            if group_idx > 0 and self._plot_items:
+            att_map = {"roll_deg": "Roll", "pitch_deg": "Pitch", "yaw_deg": "Yaw"}
+            for field, label in att_map.items():
+                if field in att_df.columns:
+                    t, v = _downsample(att_df["timestamp_s"].values, att_df[field].values)
+                    axis_key = label.lower()
+                    color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                    pen = pg.mkPen(color=color, width=1.5)
+                    plot_item.plot(t, v, pen=pen, name=f"{label} (实测)")
+
+            if att_sp_df is not None and not att_sp_df.empty:
+                sp_map = {"roll_deg_sp": "Roll", "pitch_deg_sp": "Pitch", "yaw_deg_sp": "Yaw"}
+                for field, label in sp_map.items():
+                    if field in att_sp_df.columns:
+                        t, v = _downsample(att_sp_df["timestamp_s"].values, att_sp_df[field].values)
+                        axis_key = label.lower()
+                        color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                        pen = pg.mkPen(color=color, width=1.5, style=Qt.PenStyle.DashLine)
+                        plot_item.plot(t, v, pen=pen, name=f"{label} (指令)")
+
+            _add_mode_overlay(plot_item)
+            if self._plot_items:
                 plot_item.setXLink(self._plot_items[0])
+            group_idx += 1
 
+        # --- Plot 3: Velocity (estimated solid + setpoint dashed) ---
+        vel_df = self._raw_data.get("derived_velocity_m_s")
+        vel_sp_df = self._raw_data.get("derived_velocity_setpoint")
+        if vel_df is not None and not vel_df.empty:
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title="速度 Velocity (m/s)")
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            self._plot_items.append(plot_item)
+
+            vel_map = {"vx": "Vx", "vy": "Vy", "vz": "Vz"}
+            for field, label in vel_map.items():
+                if field in vel_df.columns:
+                    t, v = _downsample(vel_df["timestamp_s"].values, vel_df[field].values)
+                    axis_key = field  # vx, vy, vz
+                    color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                    pen = pg.mkPen(color=color, width=1.5)
+                    plot_item.plot(t, v, pen=pen, name=f"{label} (实测)")
+
+            if vel_sp_df is not None and not vel_sp_df.empty:
+                sp_map = {"vx_sp": "Vx", "vy_sp": "Vy", "vz_sp": "Vz"}
+                for field, label in sp_map.items():
+                    if field in vel_sp_df.columns:
+                        t, v = _downsample(vel_sp_df["timestamp_s"].values, vel_sp_df[field].values)
+                        axis_key = field.replace("_sp", "")
+                        color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                        pen = pg.mkPen(color=color, width=1.5, style=Qt.PenStyle.DashLine)
+                        plot_item.plot(t, v, pen=pen, name=f"{label} (指令)")
+
+            _add_mode_overlay(plot_item)
+            if self._plot_items:
+                plot_item.setXLink(self._plot_items[0])
+            group_idx += 1
+
+        # --- Plot 4: Position (estimated solid + setpoint dashed) ---
+        pos_df = self._raw_data.get("derived_position_m")
+        pos_sp_df = self._raw_data.get("derived_position_setpoint")
+        if pos_df is not None and not pos_df.empty:
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title="位置 Position (m)")
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            self._plot_items.append(plot_item)
+
+            pos_map = {"x": "X", "y": "Y", "z": "Z"}
+            for field, label in pos_map.items():
+                if field in pos_df.columns:
+                    t, v = _downsample(pos_df["timestamp_s"].values, pos_df[field].values)
+                    axis_key = field
+                    color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                    pen = pg.mkPen(color=color, width=1.5)
+                    plot_item.plot(t, v, pen=pen, name=f"{label} (实测)")
+
+            if pos_sp_df is not None and not pos_sp_df.empty:
+                sp_map = {"x_sp": "X", "y_sp": "Y", "z_sp": "Z"}
+                for field, label in sp_map.items():
+                    if field in pos_sp_df.columns:
+                        t, v = _downsample(pos_sp_df["timestamp_s"].values, pos_sp_df[field].values)
+                        axis_key = field.replace("_sp", "")
+                        color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                        pen = pg.mkPen(color=color, width=1.5, style=Qt.PenStyle.DashLine)
+                        plot_item.plot(t, v, pen=pen, name=f"{label} (指令)")
+
+            _add_mode_overlay(plot_item)
+            if self._plot_items:
+                plot_item.setXLink(self._plot_items[0])
+            group_idx += 1
+
+        # --- Plot 5: Actuator Controls ---
+        ac_df = self._raw_data.get("derived_actuator_controls")
+        if ac_df is not None and not ac_df.empty:
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title="执行器控制 Actuator Controls")
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            self._plot_items.append(plot_item)
+
+            ctrl_map = {"roll_ctrl": "Roll", "pitch_ctrl": "Pitch", "yaw_ctrl": "Yaw", "thrust_ctrl": "Thrust"}
+            for field, label in ctrl_map.items():
+                if field in ac_df.columns:
+                    t, v = _downsample(ac_df["timestamp_s"].values, ac_df[field].values)
+                    axis_key = label.lower()
+                    color = AXIS_COLORS.get(axis_key, (100, 100, 100))
+                    pen = pg.mkPen(color=color, width=1.5)
+                    plot_item.plot(t, v, pen=pen, name=label)
+
+            _add_mode_overlay(plot_item)
+            if self._plot_items:
+                plot_item.setXLink(self._plot_items[0])
             group_idx += 1
 
         # Add crosshair to first plot
         if self._cursor_linked and self._plot_items:
             self._add_crosshair(self._plot_items[0])
 
-        total_points = sum(len(df) for df in self._raw_data.values() if any(c.startswith("derived_") for c in getattr(df, 'columns', [])))
         self.info_label.setText(
-            f"已绘制 {group_idx} 组处理通道 | "
+            f"已绘制 {group_idx} 组通道 (实线=实测, 虚线=指令) | "
             f"飞行模式: 蓝=多旋翼, 绿=固定翼, 橙=过渡"
         )
 
