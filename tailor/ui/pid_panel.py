@@ -43,7 +43,7 @@ from tailor.control.optimizer import (
     TuningObjective,
     TuningResult,
 )
-from tailor.dynamics.identifier import TransferFunctionModel
+from tailor.dynamics.identifier import TransferFunctionModel, IdentificationMethod
 
 
 class TuningWorker(QThread):
@@ -119,6 +119,16 @@ class PIDPanel(QWidget):
         self.dt_spin.setDecimals(4)
         self.dt_spin.setSuffix(" s")
         plant_form.addRow("采样时间:", self.dt_spin)
+
+        self.load_from_ident_btn = QPushButton("从辨识结果加载")
+        self.load_from_ident_btn.clicked.connect(self._on_load_from_ident)
+        plant_form.addRow(self.load_from_ident_btn)
+
+        self.eval_btn = QPushButton("评估当前PID")
+        self.eval_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 6px; }")
+        self.eval_btn.clicked.connect(self._on_evaluate_current)
+        plant_form.addRow(self.eval_btn)
+
         settings_layout.addWidget(plant_group)
 
         # Axis / Structure
@@ -265,6 +275,14 @@ class PIDPanel(QWidget):
         self.effort_plot.addLegend(offset=(10, 10))
         self.plot_tabs.addTab(self.effort_plot, "控制量")
 
+        # Simulation tab
+        self.sim_plot = pg.PlotWidget()
+        self.sim_plot.setLabel("bottom", "时间", units="s")
+        self.sim_plot.setLabel("left", "响应")
+        self.sim_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.sim_plot.addLegend(offset=(10, 10))
+        self.plot_tabs.addTab(self.sim_plot, "仿真预览")
+
         results_layout.addWidget(self.plot_tabs)
 
         # Results table
@@ -303,6 +321,22 @@ class PIDPanel(QWidget):
 
         self.status_label.setText(f"已加载模型: {model.method.value} fit={model.fit_percent:.1f}%")
 
+    def load_model_and_gains(self, model: TransferFunctionModel, gains: Optional[PIDGains] = None):
+        """Load plant model and optionally set current gains.
+
+        Args:
+            model: Identified transfer function model.
+            gains: Current PID gains to set (if None, loads defaults).
+        """
+        self.load_plant_model(model)
+        if gains:
+            self.kp_spin.setValue(gains.kp)
+            self.ki_spin.setValue(gains.ki)
+            self.kd_spin.setValue(gains.kd)
+            self.kff_spin.setValue(gains.kff)
+        else:
+            self._load_defaults()
+
     def _load_defaults(self):
         axis = self.axis_combo.currentData()
         cfg = default_rate_gains(axis)
@@ -310,6 +344,100 @@ class PIDPanel(QWidget):
         self.ki_spin.setValue(cfg.gains.ki)
         self.kd_spin.setValue(cfg.gains.kd)
         self.kff_spin.setValue(cfg.gains.kff)
+
+    def _on_load_from_ident(self):
+        """Load plant model from the identification panel."""
+        main_win = self.window()
+        if not hasattr(main_win, 'ident_panel'):
+            QMessageBox.warning(self, "警告", "无法访问辨识面板")
+            return
+        model = main_win.ident_panel.get_latest_model()
+        if model is None:
+            QMessageBox.warning(self, "警告", "请先完成系统辨识")
+            return
+        self.load_plant_model(model)
+
+        # Auto-select axis based on identification output channel
+        output_ch = main_win.ident_panel.output_combo.currentText()
+        if "x" in output_ch or "roll" in output_ch:
+            self.axis_combo.setCurrentIndex(0)  # Roll
+        elif "y" in output_ch or "pitch" in output_ch:
+            self.axis_combo.setCurrentIndex(1)  # Pitch
+        elif "z" in output_ch or "yaw" in output_ch:
+            self.axis_combo.setCurrentIndex(2)  # Yaw
+
+    def _on_evaluate_current(self):
+        """Evaluate current PID gains against the loaded plant model."""
+        if self._plant_tf is None:
+            QMessageBox.warning(self, "警告", "请先加载被控对象模型")
+            return
+
+        gains = self._get_current_gains()
+        structure = self.structure_combo.currentData()
+        dt = self.dt_spin.value()
+
+        try:
+            controller = PIDController(structure)
+            cl_tf = controller.get_closed_loop_tf(gains, self._plant_tf)
+
+            # Build closed-loop model
+            if isinstance(cl_tf, tuple):
+                model_cl = TransferFunctionModel(
+                    num=cl_tf[0], den=cl_tf[1], dt=dt,
+                    method=IdentificationMethod.ARX,
+                )
+            else:
+                model_cl = TransferFunctionModel(
+                    num=np.array(cl_tf.num[0][0]),
+                    den=np.array(cl_tf.den[0][0]),
+                    dt=dt,
+                    method=IdentificationMethod.ARX,
+                )
+
+            # Compute metrics
+            from tailor.dynamics.validation import (
+                ModelValidator, compute_step_response_data, compute_frequency_response_data,
+            )
+            sm = ModelValidator.step_response_metrics(model_cl)
+            fm = ModelValidator.frequency_metrics(model_cl)
+
+            # Plot step response on simulation tab
+            self.sim_plot.clear()
+            t_step, y_step = compute_step_response_data(model_cl, t_duration=2.0)
+            pen_cur = pg.mkPen(color=(55, 126, 184), width=2)
+            self.sim_plot.plot(t_step, y_step, pen=pen_cur, name="当前PID响应")
+            ref_pen = pg.mkPen(color=(150, 150, 150), width=1, style=Qt.PenStyle.DotLine)
+            self.sim_plot.plot(t_step, np.ones_like(t_step), pen=ref_pen, name="参考")
+            self.plot_tabs.setCurrentWidget(self.sim_plot)
+
+            # Show evaluation info
+            axis = self.axis_combo.currentData().value
+            info = (
+                f"=== 当前PID评估 ({axis}) ===\n"
+                f"Kp={gains.kp:.5f} Ki={gains.ki:.5f} Kd={gains.kd:.5f} Kff={gains.kff:.5f}\n"
+                f"带宽: {fm.bandwidth_hz:.2f}Hz | 相位裕度: {fm.phase_margin_deg:.1f}°\n"
+                f"超调: {sm.overshoot_pct:.1f}% | 上升时间: {sm.rise_time_s:.3f}s\n"
+                f"调节时间: {sm.settling_time_s:.3f}s"
+            )
+
+            # Add tracking metrics from ident panel if available
+            main_win = self.window()
+            metrics = main_win.ident_panel.get_tracking_metrics() if hasattr(main_win, 'ident_panel') else None
+            if metrics:
+                info += (
+                    f"\n\n=== 实际跟踪性能 ===\n"
+                    f"RMSE: {metrics['rmse']:.4f} | 归一化: {metrics['nrmse_pct']:.1f}%\n"
+                    f"响应延迟: {metrics['delay_s']:.3f}s"
+                )
+
+            self.info_text.setText(info)
+            self.status_label.setText(
+                f"评估完成: BW={fm.bandwidth_hz:.2f}Hz PM={fm.phase_margin_deg:.1f}° OS={sm.overshoot_pct:.1f}%"
+            )
+
+        except Exception as e:
+            self.status_label.setText(f"评估失败: {e}")
+            QMessageBox.warning(self, "评估错误", str(e))
 
     def _get_current_gains(self) -> PIDGains:
         return PIDGains(

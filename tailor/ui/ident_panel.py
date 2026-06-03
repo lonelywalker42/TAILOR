@@ -289,6 +289,14 @@ class IdentPanel(QWidget):
         self.resid_plot.showGrid(x=True, y=True, alpha=0.3)
         self.results_tabs.addTab(self.resid_plot, "残差分析")
 
+        # PID tracking analysis tab
+        self.pid_plot = pg.PlotWidget()
+        self.pid_plot.setLabel("bottom", "时间", units="s")
+        self.pid_plot.setLabel("left", "角速度", units="rad/s")
+        self.pid_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.pid_plot.addLegend(offset=(10, 10))
+        self.results_tabs.addTab(self.pid_plot, "PID 跟踪分析")
+
         results_layout.addWidget(self.results_tabs)
 
         # Model results table
@@ -585,6 +593,9 @@ class IdentPanel(QWidget):
             f"调节时间: {sm.settling_time_s:.3f}s"
         )
 
+        # Run PID tracking analysis
+        self._analyze_pid_tracking(model)
+
     def _plot_model_results(self, model: TransferFunctionModel):
         """Plot identification results."""
         input_name = self.input_combo.currentText()
@@ -641,6 +652,131 @@ class IdentPanel(QWidget):
         if 0 <= row < len(self._models):
             model = self._models[row]
             self._plot_model_results(model)
+
+    def _analyze_pid_tracking(self, model: TransferFunctionModel):
+        """Analyze PID tracking performance using setpoint vs actual response.
+
+        Computes tracking metrics between rate setpoints and gyro measurements,
+        and displays results on the PID tracking tab.
+        """
+        # Map output channel to corresponding setpoint channel
+        output_ch = self.output_combo.currentText()
+        sp_map = {
+            "sensor_gyro.x": ("derived_angular_rate_setpoint.roll_rate_sp", "Roll"),
+            "sensor_gyro.y": ("derived_angular_rate_setpoint.pitch_rate_sp", "Pitch"),
+            "sensor_gyro.z": ("derived_angular_rate_setpoint.yaw_rate_sp", "Yaw"),
+            "derived_attitude_deg.roll_deg": ("derived_attitude_setpoint_deg.roll_deg_sp", "Roll"),
+            "derived_attitude_deg.pitch_deg": ("derived_attitude_setpoint_deg.pitch_deg_sp", "Pitch"),
+        }
+
+        sp_ch = sp_map.get(output_ch)
+        if sp_ch is None:
+            return
+
+        sp_name, axis_label = sp_ch
+        sp_data = self._raw_data.get(sp_name)
+        resp_data = self._raw_data.get(output_ch)
+
+        if sp_data is None or resp_data is None:
+            return
+
+        sp = np.asarray(sp_data).flatten()
+        resp = np.asarray(resp_data).flatten()
+        n = min(len(sp), len(resp))
+        sp = sp[:n]
+        resp = resp[:n]
+
+        if n < 10:
+            return
+
+        dt = self.dt_spin.value()
+        t = np.arange(n) * dt
+
+        # --- Compute tracking metrics ---
+        error = sp - resp
+        rmse = np.sqrt(np.nanmean(error ** 2))
+        max_error = np.nanmax(np.abs(error))
+
+        # Cross-correlation for delay estimation
+        from scipy.signal import correlate
+        sp_norm = sp - np.nanmean(sp)
+        resp_norm = resp - np.nanmean(resp)
+        sp_std = np.nanstd(sp_norm)
+        resp_std = np.nanstd(resp_norm)
+        if sp_std > 1e-10 and resp_std > 1e-10:
+            xcorr = correlate(sp_norm, resp_norm, mode='full')
+            xcorr /= (sp_std * resp_std * n)
+            lags = np.arange(-n + 1, n)
+            peak_idx = np.argmax(np.abs(xcorr))
+            delay_samples = lags[peak_idx]
+            delay_s = delay_samples * dt
+            peak_corr = xcorr[peak_idx]
+        else:
+            delay_s = 0.0
+            peak_corr = 0.0
+
+        # Normalized RMS tracking error
+        sp_range = np.nanmax(sp) - np.nanmin(sp)
+        nrmse = (rmse / sp_range * 100) if sp_range > 1e-10 else 0.0
+
+        # --- Plot setpoint vs response ---
+        self.pid_plot.clear()
+        pen_sp = pg.mkPen(color=(55, 126, 184), width=1.5)
+        pen_resp = pg.mkPen(color=(228, 26, 28), width=1.5)
+        pen_err = pg.mkPen(color=(255, 127, 0), width=1, style=Qt.PenStyle.DashLine)
+
+        # Downsample for display
+        max_pts = 10000
+        if n > max_pts:
+            step = n // max_pts
+            t_ds = t[::step]
+            sp_ds = sp[::step]
+            resp_ds = resp[::step]
+            err_ds = error[::step]
+        else:
+            t_ds = t
+            sp_ds = sp
+            resp_ds = resp
+            err_ds = error
+
+        self.pid_plot.plot(t_ds, sp_ds, pen=pen_sp, name=f"{axis_label} 指令")
+        self.pid_plot.plot(t_ds, resp_ds, pen=pen_resp, name=f"{axis_label} 响应")
+        self.pid_plot.plot(t_ds, err_ds, pen=pen_err, name="跟踪误差")
+
+        # Add zero reference line
+        ref_pen = pg.mkPen(color=(150, 150, 150), width=1, style=Qt.PenStyle.DotLine)
+        self.pid_plot.plot(t_ds, np.zeros_like(t_ds), pen=ref_pen)
+
+        # --- Update info text with tracking metrics ---
+        info = (
+            f"=== PID 跟踪性能 ({axis_label}) ===\n"
+            f"RMSE: {rmse:.4f} rad/s | 归一化RMSE: {nrmse:.1f}%\n"
+            f"最大误差: {max_error:.4f} rad/s\n"
+            f"响应延迟: {delay_s:.3f}s | 相关峰值: {peak_corr:.3f}\n"
+            f"模型拟合: {model.fit_percent:.1f}% | 带宽: "
+        )
+        from tailor.dynamics.validation import ModelValidator
+        fm = ModelValidator.frequency_metrics(model)
+        info += f"{fm.bandwidth_hz:.2f}Hz | 相位裕度: {fm.phase_margin_deg:.1f}°"
+        self.info_text.setText(info)
+
+        # Store tracking metrics for PID panel
+        self._tracking_metrics = {
+            "axis": axis_label,
+            "rmse": rmse,
+            "nrmse_pct": nrmse,
+            "max_error": max_error,
+            "delay_s": delay_s,
+            "correlation": peak_corr,
+        }
+
+    def get_tracking_metrics(self) -> Optional[dict]:
+        """Get the latest tracking metrics for the PID panel."""
+        return getattr(self, '_tracking_metrics', None)
+
+    def get_latest_model(self) -> Optional[TransferFunctionModel]:
+        """Get the most recently identified model."""
+        return self._models[-1] if self._models else None
 
     def clear(self):
         """Clear all data and results."""
