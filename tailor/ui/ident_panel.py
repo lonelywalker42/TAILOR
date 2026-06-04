@@ -6,6 +6,7 @@ Guides the user through: data selection → preprocessing → identification →
 from __future__ import annotations
 
 from typing import Optional
+from dataclasses import dataclass
 
 import numpy as np
 import pyqtgraph as pg
@@ -47,6 +48,82 @@ from tailor.dynamics.validation import (
     compute_step_response_data,
     compute_frequency_response_data,
 )
+
+
+@dataclass
+class ChannelPair:
+    """Defines an input/output channel pair for identification."""
+    axis: str           # e.g., "roll", "pitch", "yaw", "x", "y", "z"
+    category: str       # "angular_rate", "attitude", "velocity", "position"
+    input_channel: str  # setpoint channel
+    output_channel: str # measured channel
+    label: str          # display label
+    matched: bool = False  # whether both channels were found in data
+
+
+# Standard channel pairs for PX4 logs
+STANDARD_CHANNEL_PAIRS = [
+    # Angular rate (角速度)
+    ChannelPair("roll", "angular_rate",
+                "derived_angular_rate_setpoint.roll_rate_sp",
+                "derived_gyro_rad_s.gyro_x",
+                "Roll 角速度"),
+    ChannelPair("pitch", "angular_rate",
+                "derived_angular_rate_setpoint.pitch_rate_sp",
+                "derived_gyro_rad_s.gyro_y",
+                "Pitch 角速度"),
+    ChannelPair("yaw", "angular_rate",
+                "derived_angular_rate_setpoint.yaw_rate_sp",
+                "derived_gyro_rad_s.gyro_z",
+                "Yaw 角速度"),
+    # Attitude (姿态角)
+    ChannelPair("roll", "attitude",
+                "derived_attitude_setpoint_deg.roll_deg_sp",
+                "derived_attitude_deg.roll_deg",
+                "Roll 姿态角"),
+    ChannelPair("pitch", "attitude",
+                "derived_attitude_setpoint_deg.pitch_deg_sp",
+                "derived_attitude_deg.pitch_deg",
+                "Pitch 姿态角"),
+    ChannelPair("yaw", "attitude",
+                "derived_attitude_setpoint_deg.yaw_deg_sp",
+                "derived_attitude_deg.yaw_deg",
+                "Yaw 姿态角"),
+    # Velocity (速度)
+    ChannelPair("x", "velocity",
+                "derived_velocity_setpoint.vx_sp",
+                "derived_velocity_m_s.vx",
+                "X 速度"),
+    ChannelPair("y", "velocity",
+                "derived_velocity_setpoint.vy_sp",
+                "derived_velocity_m_s.vy",
+                "Y 速度"),
+    ChannelPair("z", "velocity",
+                "derived_velocity_setpoint.vz_sp",
+                "derived_velocity_m_s.vz",
+                "Z 速度"),
+    # Position (位置)
+    ChannelPair("x", "position",
+                "derived_position_setpoint.x_sp",
+                "derived_position_m.x",
+                "X 位置"),
+    ChannelPair("y", "position",
+                "derived_position_setpoint.y_sp",
+                "derived_position_m.y",
+                "Y 位置"),
+    ChannelPair("z", "position",
+                "derived_position_setpoint.z_sp",
+                "derived_position_m.z",
+                "Z 位置"),
+]
+
+# Category labels for UI
+CATEGORY_LABELS = {
+    "angular_rate": "角速度 (Angular Rate)",
+    "attitude": "姿态角 (Attitude)",
+    "velocity": "速度 (Velocity)",
+    "position": "位置 (Position)",
+}
 
 
 class IdentificationWorker(QThread):
@@ -126,6 +203,7 @@ class IdentPanel(QWidget):
         self._time: Optional[np.ndarray] = None
         self._models: list[TransferFunctionModel] = []
         self._worker: Optional[IdentificationWorker] = None
+        self._matched_pairs: list[ChannelPair] = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -143,13 +221,41 @@ class IdentPanel(QWidget):
         data_group = QGroupBox("1. 数据选择")
         data_form = QFormLayout(data_group)
 
+        # Category selector (angular_rate, attitude, velocity, position)
+        self.category_combo = QComboBox()
+        self.category_combo.setMinimumWidth(200)
+        self.category_combo.currentIndexChanged.connect(self._on_category_changed)
+        data_form.addRow("辨识类型:", self.category_combo)
+
+        # Axis selector (roll, pitch, yaw, x, y, z)
+        self.axis_combo = QComboBox()
+        self.axis_combo.setMinimumWidth(200)
+        self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+        data_form.addRow("轴:", self.axis_combo)
+
+        # Channel pair status
+        self.pair_status_label = QLabel("未匹配")
+        self.pair_status_label.setStyleSheet("color: gray;")
+        data_form.addRow("通道状态:", self.pair_status_label)
+
+        # Manual input/output selectors (shown when auto-match fails)
+        self.manual_group = QGroupBox("手动指定通道")
+        self.manual_group.setVisible(False)
+        manual_form = QFormLayout(self.manual_group)
+
         self.input_combo = QComboBox()
         self.input_combo.setMinimumWidth(200)
-        data_form.addRow("输入通道 (u):", self.input_combo)
+        manual_form.addRow("输入通道 (u):", self.input_combo)
 
         self.output_combo = QComboBox()
         self.output_combo.setMinimumWidth(200)
-        data_form.addRow("输出通道 (y):", self.output_combo)
+        manual_form.addRow("输出通道 (y):", self.output_combo)
+
+        self.apply_manual_btn = QPushButton("应用")
+        self.apply_manual_btn.clicked.connect(self._on_apply_manual)
+        manual_form.addRow(self.apply_manual_btn)
+
+        data_form.addRow(self.manual_group)
 
         self.detect_btn = QPushButton("检测激励段")
         self.detect_btn.clicked.connect(self._on_detect_excitation)
@@ -333,32 +439,23 @@ class IdentPanel(QWidget):
         self._raw_data = raw_data
         self._time = time
 
-        # Populate channel combos
+        # Populate manual channel combos
         self.input_combo.clear()
         self.output_combo.clear()
         for name in sorted(raw_data.keys()):
             self.input_combo.addItem(name)
             self.output_combo.addItem(name)
 
-        # Try to select sensible defaults
-        for i in range(self.input_combo.count()):
-            text = self.input_combo.itemText(i)
-            if "control" in text or "actuator" in text or "throttle" in text:
-                self.input_combo.setCurrentIndex(i)
-                break
-
-        for i in range(self.output_combo.count()):
-            text = self.output_combo.itemText(i)
-            if "gyro" in text or "rate" in text:
-                self.output_combo.setCurrentIndex(i)
-                break
-
         self.status_label.setText(f"已加载 {len(raw_data)} 个通道")
 
     def auto_setup_pairs(self, flat_data: dict, time: Optional[np.ndarray] = None):
-        """Auto-detect excitation and pre-fill channel pairs for system identification.
+        """Auto-detect and match channel pairs for system identification.
 
-        Called after log load to prepare the ident panel for user confirmation.
+        Automatically identifies available setpoint/measurement pairs for:
+        - Angular rate (角速度): roll/pitch/yaw rate setpoint vs gyro
+        - Attitude (姿态角): roll/pitch/yaw angle setpoint vs attitude
+        - Velocity (速度): vx/vy/vz setpoint vs velocity
+        - Position (位置): x/y/z setpoint vs position
 
         Args:
             flat_data: Dict of channel_name -> numpy array (same as load_data).
@@ -368,69 +465,235 @@ class IdentPanel(QWidget):
         self._raw_data = flat_data
         self._time = time
 
-        # Standard input/output pairs for rate and attitude identification
-        STANDARD_PAIRS = [
-            ("actuator_controls.control[0]", "sensor_gyro.x", "Roll 速率"),
-            ("actuator_controls.control[1]", "sensor_gyro.y", "Pitch 速率"),
-            ("actuator_controls.control[3]", "sensor_gyro.z", "Yaw 速率"),
-            ("actuator_controls.control[0]", "derived_attitude_deg.roll_deg", "Roll 角度"),
-            ("actuator_controls.control[1]", "derived_attitude_deg.pitch_deg", "Pitch 角度"),
-        ]
+        # Match standard channel pairs
+        self._matched_pairs = []
+        for pair in STANDARD_CHANNEL_PAIRS:
+            pair.matched = (pair.input_channel in flat_data and
+                           pair.output_channel in flat_data)
+            self._matched_pairs.append(pair)
 
-        # Find best available pair
-        best_pair = None
-        best_score = -1
-        for input_ch, output_ch, label in STANDARD_PAIRS:
-            if input_ch in flat_data and output_ch in flat_data:
-                # Prefer rate control pairs (they have better excitation)
-                score = 2 if "gyro" in output_ch else 1
-                if score > best_score:
-                    best_score = score
-                    best_pair = (input_ch, output_ch, label)
+        # Group matched pairs by category
+        matched_by_category = {}
+        for pair in self._matched_pairs:
+            if pair.matched:
+                if pair.category not in matched_by_category:
+                    matched_by_category[pair.category] = []
+                matched_by_category[pair.category].append(pair)
 
-        if best_pair is None:
-            self.status_label.setText("未找到标准通道对，请手动选择")
+        # Update category combo
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+
+        # Add all categories, mark which ones have matches
+        for cat_key, cat_label in CATEGORY_LABELS.items():
+            has_match = cat_key in matched_by_category
+            display_label = f"{cat_label} {'[OK]' if has_match else '[未匹配]'}"
+            self.category_combo.addItem(display_label, cat_key)
+            if not has_match:
+                # Gray out unmatched categories
+                idx = self.category_combo.count() - 1
+                self.category_combo.setItemData(idx, QColor(150, 150, 150), Qt.ItemDataRole.ForegroundRole)
+
+        # Select first category with matches, or first category if none
+        if matched_by_category:
+            first_matched_cat = list(matched_by_category.keys())[0]
+            for i in range(self.category_combo.count()):
+                if self.category_combo.itemData(i) == first_matched_cat:
+                    self.category_combo.setCurrentIndex(i)
+                    break
+        else:
+            self.category_combo.setCurrentIndex(0)
+
+        self.category_combo.blockSignals(False)
+
+        # Update axis combo for selected category
+        self._on_category_changed(self.category_combo.currentIndex())
+
+        # Summary of matched pairs
+        total_matched = sum(1 for p in self._matched_pairs if p.matched)
+        total_pairs = len(self._matched_pairs)
+        self.status_label.setText(
+            f"已匹配 {total_matched}/{total_pairs} 个通道对 | "
+            f"角速度: {'OK' if 'angular_rate' in matched_by_category else 'N/A'} | "
+            f"姿态角: {'OK' if 'attitude' in matched_by_category else 'N/A'} | "
+            f"速度: {'OK' if 'velocity' in matched_by_category else 'N/A'} | "
+            f"位置: {'OK' if 'position' in matched_by_category else 'N/A'}"
+        )
+
+    def _on_category_changed(self, index: int):
+        """Handle category selection change."""
+        category = self.category_combo.currentData()
+        if category is None:
             return
 
-        input_ch, output_ch, label = best_pair
+        # Update axis combo based on category
+        self.axis_combo.blockSignals(True)
+        self.axis_combo.clear()
 
-        # Set combo selections
-        input_idx = self.input_combo.findText(input_ch)
-        if input_idx >= 0:
-            self.input_combo.setCurrentIndex(input_idx)
+        axis_mapping = {
+            "angular_rate": [("roll", "Roll"), ("pitch", "Pitch"), ("yaw", "Yaw")],
+            "attitude": [("roll", "Roll"), ("pitch", "Pitch"), ("yaw", "Yaw")],
+            "velocity": [("x", "X"), ("y", "Y"), ("z", "Z")],
+            "position": [("x", "X"), ("y", "Y"), ("z", "Z")],
+        }
 
-        output_idx = self.output_combo.findText(output_ch)
-        if output_idx >= 0:
-            self.output_combo.setCurrentIndex(output_idx)
+        axes = axis_mapping.get(category, [])
+        for axis_key, axis_label in axes:
+            # Find if this specific pair is matched
+            matched = any(
+                p.category == category and p.axis == axis_key and p.matched
+                for p in self._matched_pairs
+            )
+            display_label = f"{axis_label} {'[OK]' if matched else '[未匹配]'}"
+            self.axis_combo.addItem(display_label, axis_key)
+            if not matched:
+                idx = self.axis_combo.count() - 1
+                self.axis_combo.setItemData(idx, QColor(150, 150, 150), Qt.ItemDataRole.ForegroundRole)
 
-        # Auto-detect excitation on output channel
-        output_data = flat_data.get(output_ch)
-        if output_data is not None and time is not None:
-            detector = ExcitationDetector()
-            try:
-                segments = detector.detect(time, np.asarray(output_data).flatten(), channel_name=output_ch)
-                self.segment_list.clear()
-                for seg in segments:
-                    item = QListWidgetItem(
-                        f"[{seg.t_start:.2f}-{seg.t_end:.2f}s] "
-                        f"{seg.excitation_type.value} q={seg.quality_score:.2f}"
-                    )
-                    item.setData(Qt.ItemDataRole.UserRole, seg)
-                    self.segment_list.addItem(item)
-                # Auto-select best segment
-                if self.segment_list.count() > 0:
-                    self.segment_list.setCurrentRow(0)
-            except Exception:
-                pass
+        # Select first axis with match
+        for i in range(self.axis_combo.count()):
+            if '[OK]' in self.axis_combo.itemText(i):
+                self.axis_combo.setCurrentIndex(i)
+                break
+        else:
+            self.axis_combo.setCurrentIndex(0)
 
-        self.status_label.setText(f"已自动配置: {label} ({input_ch} → {output_ch})")
+        self.axis_combo.blockSignals(False)
+
+        # Update channel pair display
+        self._on_axis_changed(self.axis_combo.currentIndex())
+
+    def _on_axis_changed(self, index: int):
+        """Handle axis selection change."""
+        category = self.category_combo.currentData()
+        axis = self.axis_combo.currentData()
+
+        if category is None or axis is None:
+            return
+
+        # Find the matching pair
+        pair = self._find_pair(category, axis)
+
+        if pair and pair.matched:
+            # Auto-matched pair found
+            self.pair_status_label.setText(f"已匹配: {pair.input_channel} -> {pair.output_channel}")
+            self.pair_status_label.setStyleSheet("color: green; font-weight: bold;")
+            self.manual_group.setVisible(False)
+        else:
+            # No match found, show manual selection
+            self.pair_status_label.setText("未匹配，请手动指定通道")
+            self.pair_status_label.setStyleSheet("color: red; font-weight: bold;")
+            self.manual_group.setVisible(True)
+
+            # Try to pre-select best guess for manual input
+            self._preselect_manual_channels(category, axis)
+
+    def _find_pair(self, category: str, axis: str) -> Optional[ChannelPair]:
+        """Find a channel pair by category and axis."""
+        for pair in self._matched_pairs:
+            if pair.category == category and pair.axis == axis:
+                return pair
+        return None
+
+    def _preselect_manual_channels(self, category: str, axis: str):
+        """Pre-select best guess for manual channel selection."""
+        # Try to find channels that might match
+        input_guess = None
+        output_guess = None
+
+        # Look for setpoint channels
+        for name in self._raw_data.keys():
+            if "setpoint" in name.lower() or "_sp" in name.lower():
+                if axis in name.lower():
+                    input_guess = name
+                    break
+
+        # Look for measurement channels
+        for name in self._raw_data.keys():
+            if "gyro" in name.lower() or "attitude" in name.lower() or \
+               "velocity" in name.lower() or "position" in name.lower():
+                if axis in name.lower() and "setpoint" not in name.lower():
+                    output_guess = name
+                    break
+
+        if input_guess:
+            idx = self.input_combo.findText(input_guess)
+            if idx >= 0:
+                self.input_combo.setCurrentIndex(idx)
+
+        if output_guess:
+            idx = self.output_combo.findText(output_guess)
+            if idx >= 0:
+                self.output_combo.setCurrentIndex(idx)
+
+    def _on_apply_manual(self):
+        """Apply manual channel selection."""
+        category = self.category_combo.currentData()
+        axis = self.axis_combo.currentData()
+
+        if category is None or axis is None:
+            return
+
+        input_ch = self.input_combo.currentText()
+        output_ch = self.output_combo.currentText()
+
+        if not input_ch or not output_ch:
+            QMessageBox.warning(self, "错误", "请选择输入和输出通道")
+            return
+
+        # Create or update the pair in matched_pairs
+        pair = self._find_pair(category, axis)
+        if pair:
+            pair.input_channel = input_ch
+            pair.output_channel = output_ch
+            pair.matched = True
+        else:
+            # Create new pair
+            new_pair = ChannelPair(
+                axis=axis,
+                category=category,
+                input_channel=input_ch,
+                output_channel=output_ch,
+                label=f"{axis} {category}",
+                matched=True
+            )
+            self._matched_pairs.append(new_pair)
+
+        # Update UI
+        self.pair_status_label.setText(f"已手动配置: {input_ch} -> {output_ch}")
+        self.pair_status_label.setStyleSheet("color: blue; font-weight: bold;")
+        self.manual_group.setVisible(False)
+
+        # Update axis combo display
+        for i in range(self.axis_combo.count()):
+            if self.axis_combo.itemData(i) == axis:
+                current_text = self.axis_combo.itemText(i)
+                if '[未匹配]' in current_text:
+                    new_text = current_text.replace('[未匹配]', '[手动]')
+                    self.axis_combo.setItemText(i, new_text)
+                break
+
+    def _get_current_pair(self) -> Optional[ChannelPair]:
+        """Get the currently selected channel pair."""
+        category = self.category_combo.currentData()
+        axis = self.axis_combo.currentData()
+        if category and axis:
+            return self._find_pair(category, axis)
+        return None
 
     def _on_detect_excitation(self):
         """Detect excitation segments in the selected output channel."""
         from tailor.dynamics.excitation import ExcitationDetector
 
-        output_name = self.output_combo.currentText()
+        # Get current pair
+        pair = self._get_current_pair()
+        if pair and pair.matched:
+            output_name = pair.output_channel
+        else:
+            output_name = self.output_combo.currentText()
+
         if output_name not in self._raw_data:
+            self.status_label.setText("未找到输出通道数据")
             return
 
         data = self._raw_data[output_name]
@@ -468,8 +731,14 @@ class IdentPanel(QWidget):
         Returns:
             (u, y, dt)
         """
-        input_name = self.input_combo.currentText()
-        output_name = self.output_combo.currentText()
+        # First try to get from current pair
+        pair = self._get_current_pair()
+        if pair and pair.matched:
+            input_name = pair.input_channel
+            output_name = pair.output_channel
+        else:
+            input_name = self.input_combo.currentText()
+            output_name = self.output_combo.currentText()
 
         u = self._raw_data.get(input_name)
         y = self._raw_data.get(output_name)
@@ -530,8 +799,14 @@ class IdentPanel(QWidget):
         nb = self.nb_spin.value()
         nk = self.nk_spin.value()
 
-        input_ch = self.input_combo.currentText()
-        output_ch = self.output_combo.currentText()
+        # Get channel names from current pair or combo
+        pair = self._get_current_pair()
+        if pair and pair.matched:
+            input_ch = pair.input_channel
+            output_ch = pair.output_channel
+        else:
+            input_ch = self.input_combo.currentText()
+            output_ch = self.output_combo.currentText()
 
         self.run_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -598,8 +873,15 @@ class IdentPanel(QWidget):
 
     def _plot_model_results(self, model: TransferFunctionModel):
         """Plot identification results."""
-        input_name = self.input_combo.currentText()
-        output_name = self.output_combo.currentText()
+        # Get channel names from current pair
+        pair = self._get_current_pair()
+        if pair and pair.matched:
+            input_name = pair.input_channel
+            output_name = pair.output_channel
+        else:
+            input_name = self.input_combo.currentText()
+            output_name = self.output_combo.currentText()
+
         u = self._raw_data.get(input_name)
         y = self._raw_data.get(output_name)
 
@@ -656,26 +938,37 @@ class IdentPanel(QWidget):
     def _analyze_pid_tracking(self, model: TransferFunctionModel):
         """Analyze PID tracking performance using setpoint vs actual response.
 
-        Computes tracking metrics between rate setpoints and gyro measurements,
+        Computes tracking metrics between setpoints and measured response,
         and displays results on the PID tracking tab.
         """
-        # Map output channel to corresponding setpoint channel
-        output_ch = self.output_combo.currentText()
-        sp_map = {
-            "sensor_gyro.x": ("derived_angular_rate_setpoint.roll_rate_sp", "Roll"),
-            "sensor_gyro.y": ("derived_angular_rate_setpoint.pitch_rate_sp", "Pitch"),
-            "sensor_gyro.z": ("derived_angular_rate_setpoint.yaw_rate_sp", "Yaw"),
-            "derived_attitude_deg.roll_deg": ("derived_attitude_setpoint_deg.roll_deg_sp", "Roll"),
-            "derived_attitude_deg.pitch_deg": ("derived_attitude_setpoint_deg.pitch_deg_sp", "Pitch"),
-        }
+        # Get current pair
+        pair = self._get_current_pair()
 
-        sp_ch = sp_map.get(output_ch)
-        if sp_ch is None:
-            return
+        if pair and pair.matched:
+            # Use the matched pair's channels directly
+            sp_name = pair.input_channel
+            resp_name = pair.output_channel
+            axis_label = pair.label.split()[0] if pair.label else pair.axis.capitalize()
+        else:
+            # Fallback to old mapping logic
+            output_ch = self.output_combo.currentText()
+            sp_map = {
+                "sensor_gyro.x": ("derived_angular_rate_setpoint.roll_rate_sp", "Roll"),
+                "sensor_gyro.y": ("derived_angular_rate_setpoint.pitch_rate_sp", "Pitch"),
+                "sensor_gyro.z": ("derived_angular_rate_setpoint.yaw_rate_sp", "Yaw"),
+                "derived_attitude_deg.roll_deg": ("derived_attitude_setpoint_deg.roll_deg_sp", "Roll"),
+                "derived_attitude_deg.pitch_deg": ("derived_attitude_setpoint_deg.pitch_deg_sp", "Pitch"),
+            }
 
-        sp_name, axis_label = sp_ch
+            sp_ch = sp_map.get(output_ch)
+            if sp_ch is None:
+                return
+
+            sp_name, axis_label = sp_ch
+            resp_name = output_ch
+
         sp_data = self._raw_data.get(sp_name)
-        resp_data = self._raw_data.get(output_ch)
+        resp_data = self._raw_data.get(resp_name)
 
         if sp_data is None or resp_data is None:
             return
@@ -782,6 +1075,7 @@ class IdentPanel(QWidget):
         """Clear all data and results."""
         self._raw_data.clear()
         self._models.clear()
+        self._matched_pairs.clear()
         self.time_plot.clear()
         self.freq_plot.clear()
         self.step_plot.clear()
@@ -791,4 +1085,9 @@ class IdentPanel(QWidget):
         self.info_text.clear()
         self.input_combo.clear()
         self.output_combo.clear()
+        self.category_combo.clear()
+        self.axis_combo.clear()
+        self.pair_status_label.setText("未匹配")
+        self.pair_status_label.setStyleSheet("color: gray;")
+        self.manual_group.setVisible(False)
         self.status_label.setText("就绪")

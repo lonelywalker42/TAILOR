@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from typing import Optional
+from dataclasses import dataclass
+from enum import Enum
 
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPen, QBrush
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QPen, QBrush, QFont
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -23,6 +25,11 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QToolBar,
     QSizePolicy,
+    QFrame,
+    QScrollArea,
+    QGroupBox,
+    QGridLayout,
+    QLineEdit,
 )
 
 from tailor.core.config import NavState
@@ -59,16 +66,85 @@ PLOT_COLORS = [
 ]
 
 
+class StatisticsPanel(QWidget):
+    """Panel displaying real-time statistics for the hovered time range."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+        self._stats_data: dict[str, np.ndarray] = {}
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        # Title
+        title = QLabel("统计信息")
+        title.setStyleSheet("font-weight: bold; font-size: 11px;")
+        layout.addWidget(title)
+
+        # Statistics display
+        self.stats_label = QLabel("悬停在图表上查看统计")
+        self.stats_label.setWordWrap(True)
+        self.stats_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.stats_label)
+
+        # Cursor position display
+        self.cursor_label = QLabel("")
+        self.cursor_label.setStyleSheet("font-size: 10px; color: #666;")
+        layout.addWidget(self.cursor_label)
+
+        layout.addStretch()
+
+    def update_statistics(self, time_pos: float, data: dict[str, pd.DataFrame]):
+        """Update statistics for the current cursor position."""
+        if not data:
+            return
+
+        stats_text = []
+        for name, df in data.items():
+            if df.empty or "timestamp_s" not in df.columns:
+                continue
+
+            # Find nearest point
+            time_arr = df["timestamp_s"].values
+            idx = np.argmin(np.abs(time_arr - time_pos))
+            nearest_time = time_arr[idx]
+
+            # Get numeric columns
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            numeric_cols = [c for c in numeric_cols if c != "timestamp_s"]
+
+            if not numeric_cols:
+                continue
+
+            stats_text.append(f"<b>{name}</b>")
+            for col in numeric_cols[:5]:  # Limit to 5 columns per message
+                val = df[col].iloc[idx]
+                if isinstance(val, (int, float)):
+                    stats_text.append(f"  {col}: {val:.3f}")
+
+        if stats_text:
+            self.stats_label.setText("<br>".join(stats_text))
+            self.cursor_label.setText(f"时间: {time_pos:.3f}s")
+
+
 class ModeIndicatorBar(QWidget):
     """Horizontal bar showing flight mode segments with color coding."""
+
+    # Signal emitted when user clicks on a time position
+    time_clicked = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._segments: list[dict] = []
         self._t_start: float = 0.0
         self._t_end: float = 0.0
-        self.setMinimumHeight(18)
-        self.setMaximumHeight(18)
+        self._cursor_pos: float = -1.0
+        self.setMinimumHeight(28)
+        self.setMaximumHeight(28)
+        self.setMouseTracking(True)
 
     def set_segments(self, segments: list[dict], t_start: float, t_end: float):
         """Set flight mode segments for display."""
@@ -76,6 +152,20 @@ class ModeIndicatorBar(QWidget):
         self._t_start = t_start
         self._t_end = t_end
         self.update()
+
+    def set_cursor_position(self, t: float):
+        """Update the cursor position on the mode bar."""
+        self._cursor_pos = t
+        self.update()
+
+    def mousePressEvent(self, event):
+        """Handle mouse click to set time position."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            w = self.width()
+            total_duration = self._t_end - self._t_start
+            if total_duration > 0 and w > 0:
+                t = self._t_start + (event.position().x() / w) * total_duration
+                self.time_clicked.emit(t)
 
     def paintEvent(self, event):
         """Draw the mode indicator bar."""
@@ -137,7 +227,23 @@ class ModeIndicatorBar(QWidget):
             fm = painter.fontMetrics()
             tw = fm.horizontalAdvance(label)
             if tw < (x_end - x_start):
-                painter.drawText(x_mid - tw // 2, h - 4, label)
+                painter.drawText(x_mid - tw // 2, h - 6, label)
+
+        # Draw time axis ticks
+        painter.setPen(QPen(QColor(80, 80, 80), 1))
+        num_ticks = min(10, max(4, w // 100))
+        for i in range(num_ticks + 1):
+            t = self._t_start + (i / num_ticks) * total_duration
+            x = int((t - self._t_start) / total_duration * w)
+            painter.drawLine(x, h - 8, x, h)
+            if i % 2 == 0:  # Label every other tick
+                painter.drawText(x + 2, h - 10, f"{t:.1f}s")
+
+        # Draw cursor position
+        if self._cursor_pos >= self._t_start and self._cursor_pos <= self._t_end:
+            x = int((self._cursor_pos - self._t_start) / total_duration * w)
+            painter.setPen(QPen(QColor(255, 0, 0), 2))
+            painter.drawLine(x, 0, x, h)
 
         painter.end()
 
@@ -149,42 +255,75 @@ class ChannelSelector(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._setup_ui()
         self._channel_items: dict[str, QTreeWidgetItem] = {}
+        self._all_channels: list[str] = []  # For search
+        self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
 
-        # Preset selector
+        # Search/filter box
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("搜索:"))
+        self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText("输入关键词过滤通道...")
+        self.search_box.setClearButtonEnabled(True)
+        self.search_box.textChanged.connect(self._on_search_changed)
+        search_layout.addWidget(self.search_box)
+        layout.addLayout(search_layout)
+
+        # Preset selector with more options
         preset_layout = QHBoxLayout()
         preset_layout.addWidget(QLabel("预设:"))
         self.preset_combo = QComboBox()
         self.preset_combo.addItem("基础状态量", "basic")
         self.preset_combo.addItem("角速率控制", "rate_control")
         self.preset_combo.addItem("姿态跟踪", "attitude")
+        self.preset_combo.addItem("位置控制", "position_control")
+        self.preset_combo.addItem("传感器原始", "sensor_raw")
+        self.preset_combo.addItem("执行器", "actuator")
         self.preset_combo.addItem("自定义", "custom")
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         preset_layout.addWidget(self.preset_combo)
+        layout.addLayout(preset_layout)
 
+        # Quick action buttons
+        action_layout = QHBoxLayout()
         self.select_all_btn = QPushButton("全选")
         self.select_all_btn.clicked.connect(self._select_all)
-        preset_layout.addWidget(self.select_all_btn)
+        action_layout.addWidget(self.select_all_btn)
 
         self.deselect_all_btn = QPushButton("全不选")
         self.deselect_all_btn.clicked.connect(self._deselect_all)
-        preset_layout.addWidget(self.deselect_all_btn)
+        action_layout.addWidget(self.deselect_all_btn)
 
-        layout.addLayout(preset_layout)
+        self.expand_all_btn = QPushButton("展开")
+        self.expand_all_btn.clicked.connect(self._expand_all)
+        action_layout.addWidget(self.expand_all_btn)
 
-        # Tree widget
+        self.collapse_all_btn = QPushButton("折叠")
+        self.collapse_all_btn.clicked.connect(self._collapse_all)
+        action_layout.addWidget(self.collapse_all_btn)
+
+        layout.addLayout(action_layout)
+
+        # Tree widget with improved display
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["通道", "消息", "字段", "单位"])
-        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["通道", "类型", "单位"])
+        self.tree.setColumnCount(3)
         self.tree.setRootIsDecorated(True)
         self.tree.setAlternatingRowColors(True)
+        self.tree.setAnimated(True)
+        self.tree.setUniformRowHeights(True)
         self.tree.itemChanged.connect(self._on_item_changed)
-        layout.addWidget(self.tree)
+        layout.addWidget(self.tree, stretch=1)
+
+        # Status label showing selection count
+        self.status_label = QLabel("未选择通道")
+        self.status_label.setStyleSheet("font-size: 10px; color: #666;")
+        layout.addWidget(self.status_label)
 
     def populate_from_log(self, available_messages: list[str], message_fields: dict[str, list[str]]):
         """Populate the tree with available channels from a log file.
@@ -195,31 +334,49 @@ class ChannelSelector(QWidget):
         """
         self.tree.clear()
         self._channel_items.clear()
+        self._all_channels.clear()
 
-        # Group by category
-        categories = {
-            "处理通道 (Derived)": [m for m in available_messages if m.startswith("derived_")],
-            "传感器 (Sensor)": ["sensor_accel", "sensor_gyro", "sensor_mag", "airspeed"],
-            "姿态 (Attitude)": ["vehicle_attitude", "vehicle_attitude_setpoint", "vehicle_rates_setpoint"],
-            "位置 (Position)": ["vehicle_local_position", "vehicle_local_position_setpoint", "vehicle_global_position"],
-            "执行器 (Actuator)": ["actuator_outputs", "actuator_controls", "actuator_motors", "actuator_servos"],
-            "状态 (Status)": ["vehicle_status", "manual_control_setpoint", "battery_status"],
-            "其他 (Other)": [],
-        }
+        # Group by category with better organization
+        categories = [
+            ("处理通道 (Derived)", [m for m in available_messages if m.startswith("derived_")]),
+            ("角速度 (Angular Rate)", ["vehicle_rates_setpoint", "sensor_gyro"]),
+            ("姿态 (Attitude)", ["vehicle_attitude", "vehicle_attitude_setpoint"]),
+            ("位置 (Position)", ["vehicle_local_position", "vehicle_local_position_setpoint", "vehicle_global_position"]),
+            ("速度 (Velocity)", ["vehicle_local_position", "vehicle_local_position_setpoint"]),  # Overlaps with position
+            ("传感器 (Sensor)", ["sensor_accel", "sensor_gyro", "sensor_mag", "airspeed"]),
+            ("执行器 (Actuator)", ["actuator_outputs", "actuator_controls", "actuator_motors", "actuator_servos"]),
+            ("状态 (Status)", ["vehicle_status", "manual_control_setpoint", "battery_status"]),
+            ("其他 (Other)", []),
+        ]
 
-        # Assign messages to categories
+        # Track which messages have been assigned to avoid duplicates
         assigned = set()
-        for cat_name, msg_list in categories.items():
-            cat_item = QTreeWidgetItem(self.tree, [cat_name])
+        category_items = {}  # Store category items for later reference
+
+        for cat_name, msg_list in categories:
+            # Check if any messages in this category exist
+            existing_msgs = [m for m in msg_list if m in available_messages and m not in assigned]
+            if not existing_msgs and cat_name != "其他 (Other)":
+                continue
+
+            cat_item = QTreeWidgetItem(self.tree, [cat_name, "", ""])
             cat_item.setFlags(cat_item.flags() | Qt.ItemFlag.ItemIsAutoTristate)
             cat_item.setCheckState(0, Qt.CheckState.Unchecked)
+            cat_item.setExpanded(True)
+            category_items[cat_name] = cat_item
 
+            # Use a set to avoid duplicate messages in this category
+            seen_in_cat = set()
             for msg_name in msg_list:
-                if msg_name not in available_messages:
+                if msg_name not in available_messages or msg_name in assigned or msg_name in seen_in_cat:
                     continue
                 assigned.add(msg_name)
+                seen_in_cat.add(msg_name)
+
                 fields = message_fields.get(msg_name, [])
-                msg_item = QTreeWidgetItem(cat_item, [msg_name, msg_name, "", ""])
+                # Determine message type for display
+                msg_type = self._get_message_type(msg_name)
+                msg_item = QTreeWidgetItem(cat_item, [msg_name, msg_type, ""])
                 msg_item.setFlags(msg_item.flags() | Qt.ItemFlag.ItemIsAutoTristate)
                 msg_item.setCheckState(0, Qt.CheckState.Unchecked)
 
@@ -227,34 +384,139 @@ class ChannelSelector(QWidget):
                     if field_name in ("timestamp", "timestamp_s", "instance"):
                         continue
                     ch_key = f"{msg_name}.{field_name}"
-                    field_item = QTreeWidgetItem(msg_item, [field_name, msg_name, field_name, ""])
+                    # Get field unit
+                    unit = self._get_field_unit(msg_name, field_name)
+                    field_item = QTreeWidgetItem(msg_item, [field_name, "", unit])
                     field_item.setCheckState(0, Qt.CheckState.Unchecked)
                     field_item.setFlags(field_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     self._channel_items[ch_key] = field_item
-
-            cat_item.setExpanded(True)
+                    self._all_channels.append(ch_key)
 
         # Add unassigned messages to "Other"
         other_item = None
         for msg_name in available_messages:
             if msg_name not in assigned:
                 if other_item is None:
-                    other_item = QTreeWidgetItem(self.tree, ["其他 (Other)"])
+                    other_item = QTreeWidgetItem(self.tree, ["其他 (Other)", "", ""])
                     other_item.setFlags(other_item.flags() | Qt.ItemFlag.ItemIsAutoTristate)
                     other_item.setCheckState(0, Qt.CheckState.Unchecked)
-                    other_item.setExpanded(True)
+                    other_item.setExpanded(False)  # Collapse by default
+                    category_items["其他 (Other)"] = other_item
+
                 fields = message_fields.get(msg_name, [])
-                msg_item = QTreeWidgetItem(other_item, [msg_name, msg_name, "", ""])
+                msg_type = self._get_message_type(msg_name)
+                msg_item = QTreeWidgetItem(other_item, [msg_name, msg_type, ""])
                 msg_item.setFlags(msg_item.flags() | Qt.ItemFlag.ItemIsAutoTristate)
                 msg_item.setCheckState(0, Qt.CheckState.Unchecked)
+
                 for field_name in fields:
                     if field_name in ("timestamp", "timestamp_s", "instance"):
                         continue
                     ch_key = f"{msg_name}.{field_name}"
-                    field_item = QTreeWidgetItem(msg_item, [field_name, msg_name, field_name, ""])
+                    unit = self._get_field_unit(msg_name, field_name)
+                    field_item = QTreeWidgetItem(msg_item, [field_name, "", unit])
                     field_item.setCheckState(0, Qt.CheckState.Unchecked)
                     field_item.setFlags(field_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                     self._channel_items[ch_key] = field_item
+                    self._all_channels.append(ch_key)
+
+        # Update status
+        self._update_status()
+
+    def _get_message_type(self, msg_name: str) -> str:
+        """Get a short type description for a message."""
+        type_map = {
+            "sensor_gyro": "陀螺仪",
+            "sensor_accel": "加速度计",
+            "sensor_mag": "磁力计",
+            "airspeed": "空速",
+            "vehicle_attitude": "姿态四元数",
+            "vehicle_attitude_setpoint": "姿态指令",
+            "vehicle_rates_setpoint": "角速率指令",
+            "vehicle_local_position": "本地位置",
+            "vehicle_local_position_setpoint": "位置指令",
+            "vehicle_global_position": "全局位置",
+            "actuator_outputs": "PWM输出",
+            "actuator_controls": "控制量",
+            "actuator_motors": "电机输出",
+            "actuator_servos": "舵机输出",
+            "vehicle_status": "飞行状态",
+            "manual_control_setpoint": "遥控输入",
+            "battery_status": "电池状态",
+        }
+        if msg_name.startswith("derived_"):
+            return "计算量"
+        return type_map.get(msg_name, "")
+
+    def _get_field_unit(self, msg_name: str, field_name: str) -> str:
+        """Get the unit for a specific field."""
+        # Common field units
+        unit_map = {
+            "timestamp_s": "s",
+            "x": "m", "y": "m", "z": "m",
+            "vx": "m/s", "vy": "m/s", "vz": "m/s",
+            "roll": "rad", "pitch": "rad", "yaw": "rad",
+            "roll_deg": "deg", "pitch_deg": "deg", "yaw_deg": "deg",
+            "roll_rate_sp": "rad/s", "pitch_rate_sp": "rad/s", "yaw_rate_sp": "rad/s",
+            "gyro_x": "rad/s", "gyro_y": "rad/s", "gyro_z": "rad/s",
+            "q[0]": "", "q[1]": "", "q[2]": "", "q[3]": "",
+            "control[0]": "", "control[1]": "", "control[2]": "", "control[3]": "",
+            "vx_sp": "m/s", "vy_sp": "m/s", "vz_sp": "m/s",
+            "x_sp": "m", "y_sp": "m", "z_sp": "m",
+            "roll_deg_sp": "deg", "pitch_deg_sp": "deg", "yaw_deg_sp": "deg",
+        }
+        if field_name in unit_map:
+            return unit_map[field_name]
+        if "rate" in field_name or "gyro" in field_name:
+            return "rad/s"
+        if "deg" in field_name:
+            return "deg"
+        if "vel" in field_name or "speed" in field_name:
+            return "m/s"
+        if "pos" in field_name or field_name in ("x", "y", "z"):
+            return "m"
+        return ""
+
+    def _on_search_changed(self, text: str):
+        """Filter channels based on search text."""
+        text = text.lower().strip()
+        for ch_key, item in self._channel_items.items():
+            if not text:
+                # Show all if search is empty
+                item.setHidden(False)
+            else:
+                # Show if channel key or parent message contains search text
+                msg, field = ch_key.split(".", 1)
+                visible = (text in ch_key.lower() or
+                          text in msg.lower() or
+                          text in field.lower())
+                item.setHidden(not visible)
+
+                # Also show parent items if they have visible children
+                parent = item.parent()
+                if parent and visible:
+                    parent.setHidden(False)
+                    parent.setExpanded(True)
+
+    def _expand_all(self):
+        """Expand all tree items."""
+        self.tree.expandAll()
+
+    def _collapse_all(self):
+        """Collapse all tree items."""
+        self.tree.collapseAll()
+
+    def _update_status(self):
+        """Update the status label with selection count."""
+        selected_count = sum(
+            1 for item in self._channel_items.values()
+            if item.checkState(0) == Qt.CheckState.Checked
+        )
+        total_count = len(self._channel_items)
+        if selected_count == 0:
+            self.status_label.setText(f"未选择通道 (共 {total_count} 个可用)")
+        else:
+            self.status_label.setText(f"已选择 {selected_count}/{total_count} 个通道")
 
     def get_selected_channels(self) -> list[tuple[str, str]]:
         """Get list of (message_name, field_name) for checked channels."""
@@ -276,6 +538,8 @@ class ChannelSelector(QWidget):
                 enabled = item.checkState(0) == Qt.CheckState.Checked
                 self.channel_toggled.emit(msg, field, enabled)
                 break
+        # Update status
+        self._update_status()
 
     def _on_preset_changed(self, index: int):
         """Apply a channel preset."""
@@ -288,6 +552,43 @@ class ChannelSelector(QWidget):
             targets = RATE_CONTROL_CHANNELS
         elif preset == "attitude":
             targets = ATTITUDE_CHANNELS
+        elif preset == "position_control":
+            # Position control preset
+            from tailor.parser.data_pipeline import ChannelSpec
+            targets = [
+                ChannelSpec("vehicle_local_position_setpoint", "x", "position_x_sp", "state"),
+                ChannelSpec("vehicle_local_position_setpoint", "y", "position_y_sp", "state"),
+                ChannelSpec("vehicle_local_position_setpoint", "z", "position_z_sp", "state"),
+                ChannelSpec("vehicle_local_position", "x", "position_x", "state"),
+                ChannelSpec("vehicle_local_position", "y", "position_y", "state"),
+                ChannelSpec("vehicle_local_position", "z", "position_z", "state"),
+                ChannelSpec("vehicle_local_position_setpoint", "vx", "velocity_x_sp", "state"),
+                ChannelSpec("vehicle_local_position_setpoint", "vy", "velocity_y_sp", "state"),
+                ChannelSpec("vehicle_local_position_setpoint", "vz", "velocity_z_sp", "state"),
+                ChannelSpec("vehicle_local_position", "vx", "velocity_x", "state"),
+                ChannelSpec("vehicle_local_position", "vy", "velocity_y", "state"),
+                ChannelSpec("vehicle_local_position", "vz", "velocity_z", "state"),
+            ]
+        elif preset == "sensor_raw":
+            # Raw sensor data preset
+            from tailor.parser.data_pipeline import ChannelSpec
+            targets = [
+                ChannelSpec("sensor_gyro", "x", "gyro_x", "state"),
+                ChannelSpec("sensor_gyro", "y", "gyro_y", "state"),
+                ChannelSpec("sensor_gyro", "z", "gyro_z", "state"),
+                ChannelSpec("sensor_accel", "x", "accel_x", "state"),
+                ChannelSpec("sensor_accel", "y", "accel_y", "state"),
+                ChannelSpec("sensor_accel", "z", "accel_z", "state"),
+            ]
+        elif preset == "actuator":
+            # Actuator output preset
+            from tailor.parser.data_pipeline import ChannelSpec
+            targets = [
+                ChannelSpec("actuator_controls", "control[0]", "roll_ctrl", "control"),
+                ChannelSpec("actuator_controls", "control[1]", "pitch_ctrl", "control"),
+                ChannelSpec("actuator_controls", "control[2]", "thrust_ctrl", "control"),
+                ChannelSpec("actuator_controls", "control[3]", "yaw_ctrl", "control"),
+            ]
         else:
             return
 
@@ -297,10 +598,13 @@ class ChannelSelector(QWidget):
                 self._channel_items[ch_key].setCheckState(0, Qt.CheckState.Checked)
 
     def _select_all(self):
+        """Select all visible channels."""
         for item in self._channel_items.values():
-            item.setCheckState(0, Qt.CheckState.Checked)
+            if not item.isHidden():
+                item.setCheckState(0, Qt.CheckState.Checked)
 
     def _deselect_all(self):
+        """Deselect all channels."""
         for item in self._channel_items.values():
             item.setCheckState(0, Qt.CheckState.Unchecked)
 
@@ -315,71 +619,119 @@ class LogViewerWidget(QWidget):
         self._pipeline_result: Optional[PipelineResult] = None
         self._plot_items: list[pg.PlotItem] = []
         self._cursor_linked: bool = True
+        self._auto_plot_on_load: bool = True
         self._setup_ui()
 
     def _setup_ui(self):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Splitter: channel selector | plot area
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # Main horizontal splitter: left panel | plot area | right panel
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left: Channel selector
         self.channel_selector = ChannelSelector()
-        self.channel_selector.setMinimumWidth(220)
-        self.channel_selector.setMaximumWidth(350)
-        splitter.addWidget(self.channel_selector)
+        self.channel_selector.setMinimumWidth(200)
+        self.channel_selector.setMaximumWidth(320)
+        main_splitter.addWidget(self.channel_selector)
 
-        # Right: Plot area
+        # Center: Plot area
         plot_area = QWidget()
         plot_layout = QVBoxLayout(plot_area)
         plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.setSpacing(2)
 
-        # Toolbar
-        toolbar = QToolBar()
-        toolbar.setMovable(False)
+        # Top toolbar area
+        toolbar_frame = QFrame()
+        toolbar_frame.setFrameStyle(QFrame.Shape.StyledPanel)
+        toolbar_layout = QHBoxLayout(toolbar_frame)
+        toolbar_layout.setContentsMargins(4, 2, 4, 2)
+
+        # Left toolbar group: view controls
+        view_group = QGroupBox("视图")
+        view_group.setStyleSheet("QGroupBox { font-size: 10px; }")
+        view_layout = QHBoxLayout(view_group)
+        view_layout.setContentsMargins(4, 2, 4, 2)
 
         self.link_cursor_cb = QCheckBox("光标联动")
         self.link_cursor_cb.setChecked(True)
         self.link_cursor_cb.toggled.connect(self._toggle_cursor_link)
-        toolbar.addWidget(self.link_cursor_cb)
+        view_layout.addWidget(self.link_cursor_cb)
 
-        toolbar.addSeparator()
+        self.auto_plot_cb = QCheckBox("自动绘制")
+        self.auto_plot_cb.setChecked(True)
+        self.auto_plot_cb.toggled.connect(self._toggle_auto_plot)
+        view_layout.addWidget(self.auto_plot_cb)
 
-        # Resample rate
-        toolbar.addWidget(QLabel("重采样(Hz):"))
+        # Plot mode selector
+        view_layout.addWidget(QLabel("绘图模式:"))
+        self.plot_mode_combo = QComboBox()
+        self.plot_mode_combo.addItem("重叠绘图", "overlay")
+        self.plot_mode_combo.addItem("分开绘图", "separate")
+        self.plot_mode_combo.addItem("按类别分组", "by_category")
+        self.plot_mode_combo.setToolTip(
+            "重叠绘图: 所有通道在同一图表显示\n"
+            "分开绘图: 每个通道单独一个图表\n"
+            "按类别分组: 同类通道重叠，不同类分开"
+        )
+        self.plot_mode_combo.setFixedWidth(100)
+        view_layout.addWidget(self.plot_mode_combo)
+
+        toolbar_layout.addWidget(view_group)
+
+        # Middle toolbar group: processing controls
+        proc_group = QGroupBox("处理")
+        proc_group.setStyleSheet("QGroupBox { font-size: 10px; }")
+        proc_layout = QHBoxLayout(proc_group)
+        proc_layout.setContentsMargins(4, 2, 4, 2)
+
+        proc_layout.addWidget(QLabel("重采样:"))
         self.resample_spin = QDoubleSpinBox()
         self.resample_spin.setRange(0, 10000)
         self.resample_spin.setValue(0)
         self.resample_spin.setSpecialValueText("原始")
         self.resample_spin.setDecimals(1)
-        toolbar.addWidget(self.resample_spin)
+        self.resample_spin.setSuffix(" Hz")
+        self.resample_spin.setFixedWidth(90)
+        proc_layout.addWidget(self.resample_spin)
 
-        toolbar.addSeparator()
-
-        # Coordinate frame
-        toolbar.addWidget(QLabel("坐标系:"))
+        proc_layout.addWidget(QLabel("坐标系:"))
         self.frame_combo = QComboBox()
-        self.frame_combo.addItem("机体 FRD", "frd")
-        self.frame_combo.addItem("世界 NED", "ned")
-        self.frame_combo.addItem("世界 ENU", "enu")
+        self.frame_combo.addItem("FRD", "frd")
+        self.frame_combo.addItem("NED", "ned")
+        self.frame_combo.addItem("ENU", "enu")
         self.frame_combo.addItem("推力垂向", "thrust_vertical")
-        toolbar.addWidget(self.frame_combo)
+        self.frame_combo.setFixedWidth(80)
+        proc_layout.addWidget(self.frame_combo)
 
-        toolbar.addSeparator()
+        toolbar_layout.addWidget(proc_group)
+
+        # Right toolbar group: action buttons
+        action_group = QGroupBox("操作")
+        action_group.setStyleSheet("QGroupBox { font-size: 10px; }")
+        action_layout = QHBoxLayout(action_group)
+        action_layout.setContentsMargins(4, 2, 4, 2)
 
         self.plot_btn = QPushButton("绘制")
+        self.plot_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 4px 12px; }")
         self.plot_btn.clicked.connect(self._on_plot_clicked)
-        toolbar.addWidget(self.plot_btn)
+        action_layout.addWidget(self.plot_btn)
+
+        self.clear_btn = QPushButton("清除")
+        self.clear_btn.clicked.connect(self._on_clear_clicked)
+        action_layout.addWidget(self.clear_btn)
 
         self.export_btn = QPushButton("导出")
         self.export_btn.clicked.connect(self._on_export_clicked)
-        toolbar.addWidget(self.export_btn)
+        action_layout.addWidget(self.export_btn)
 
-        plot_layout.addWidget(toolbar)
+        toolbar_layout.addWidget(action_group)
 
-        # Mode indicator bar
+        plot_layout.addWidget(toolbar_frame)
+
+        # Mode indicator bar (now taller with time axis)
         self.mode_bar = ModeIndicatorBar()
+        self.mode_bar.time_clicked.connect(self._on_mode_bar_clicked)
         plot_layout.addWidget(self.mode_bar)
 
         # pyqtgraph GraphicsLayoutWidget
@@ -388,15 +740,37 @@ class LogViewerWidget(QWidget):
         self.plot_widget.setBackground('w')
         plot_layout.addWidget(self.plot_widget, stretch=1)
 
-        # Info label
+        # Bottom info bar
+        info_frame = QFrame()
+        info_frame.setFrameStyle(QFrame.Shape.StyledPanel)
+        info_layout = QHBoxLayout(info_frame)
+        info_layout.setContentsMargins(4, 2, 4, 2)
+
         self.info_label = QLabel('加载日志文件后，选择通道并点击"绘制"')
-        plot_layout.addWidget(self.info_label)
+        self.info_label.setStyleSheet("font-size: 10px;")
+        info_layout.addWidget(self.info_label)
 
-        splitter.addWidget(plot_area)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
+        self.cursor_info_label = QLabel("")
+        self.cursor_info_label.setStyleSheet("font-size: 10px; color: #666;")
+        self.cursor_info_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        info_layout.addWidget(self.cursor_info_label)
 
-        main_layout.addWidget(splitter)
+        plot_layout.addWidget(info_frame)
+
+        main_splitter.addWidget(plot_area)
+
+        # Right: Statistics panel
+        self.stats_panel = StatisticsPanel()
+        self.stats_panel.setMinimumWidth(180)
+        self.stats_panel.setMaximumWidth(250)
+        main_splitter.addWidget(self.stats_panel)
+
+        # Set splitter proportions
+        main_splitter.setStretchFactor(0, 0)  # Channel selector - fixed
+        main_splitter.setStretchFactor(1, 1)  # Plot area - stretch
+        main_splitter.setStretchFactor(2, 0)  # Stats panel - fixed
+
+        main_layout.addWidget(main_splitter)
 
     def _derive_processed_channels(self, raw_data: dict) -> tuple[dict, dict[str, list[str]]]:
         """Compute derived channels from raw data.
@@ -610,8 +984,8 @@ class LogViewerWidget(QWidget):
                 f"{len(self._flight_segments)} 个飞行模式段"
             )
 
-        # Auto-plot derived channels
-        if processed_fields:
+        # Auto-plot derived channels if enabled
+        if processed_fields and self._auto_plot_on_load:
             self._auto_plot_derived()
 
     def _auto_plot_derived(self):
@@ -814,7 +1188,7 @@ class LogViewerWidget(QWidget):
                 plot_item.setXLink(self._plot_items[0])
             group_idx += 1
 
-        # Add crosshair to first plot
+        # Add crosshair to all plots for synchronized cursor tracking
         if self._cursor_linked and self._plot_items:
             self._add_crosshair(self._plot_items[0])
 
@@ -883,7 +1257,13 @@ class LogViewerWidget(QWidget):
         self._plot_result(self._pipeline_result)
 
     def _plot_result(self, result: PipelineResult):
-        """Plot pipeline result using pyqtgraph."""
+        """Plot pipeline result using pyqtgraph.
+
+        Supports three plotting modes:
+        - overlay: All channels on the same plot
+        - separate: Each channel on its own plot
+        - by_category: Group by category (state/control), channels in same group overlaid
+        """
         self.plot_widget.clear()
         self._plot_items.clear()
 
@@ -897,74 +1277,113 @@ class LogViewerWidget(QWidget):
         if n_channels == 0:
             return
 
-        # Group channels by category for shared axes
-        state_cols = [s.display_name for s in result.channel_specs if s.category == "state" and s.display_name in df.columns]
-        control_cols = [s.display_name for s in result.channel_specs if s.category == "control" and s.display_name in df.columns]
-        other_cols = [c for c in df.columns if c not in state_cols and c not in control_cols]
-
-        plot_groups = []
-        if state_cols:
-            plot_groups.append(("状态量", state_cols))
-        if control_cols:
-            plot_groups.append(("控制量", control_cols))
-        if other_cols:
-            plot_groups.append(("其他", other_cols))
-
         time = df.index.values
+        plot_mode = self.plot_mode_combo.currentData()
 
-        for group_idx, (group_name, cols) in enumerate(plot_groups):
-            # Create a plot row
-            vb = None  # Link all views in group
-            for ch_idx, col in enumerate(cols):
+        # Helper function for downsampling
+        def downsample(t, v, max_pts=10000):
+            if len(t) > max_pts:
+                step = len(t) // max_pts
+                return t[::step], v[::step]
+            return t, v
+
+        if plot_mode == "overlay":
+            # All channels on one plot
+            plot_item = self.plot_widget.addPlot(row=0, col=0, title="所有通道")
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            self._plot_items.append(plot_item)
+
+            for ch_idx, col in enumerate(df.columns):
+                color = PLOT_COLORS[ch_idx % len(PLOT_COLORS)]
+                pen = pg.mkPen(color=color, width=1.5)
+                t_ds, v_ds = downsample(time, df[col].values)
+                plot_item.plot(t_ds, v_ds, pen=pen, name=col)
+
+            if self._cursor_linked:
+                self._add_crosshair(plot_item)
+
+        elif plot_mode == "separate":
+            # Each channel on its own plot
+            for ch_idx, col in enumerate(df.columns):
                 color = PLOT_COLORS[ch_idx % len(PLOT_COLORS)]
                 pen = pg.mkPen(color=color, width=1.5)
 
-                if ch_idx == 0:
-                    plot_item = self.plot_widget.addPlot(
-                        row=group_idx, col=0,
-                        title=f"{group_name}",
-                    )
-                    plot_item.setLabel("bottom", "时间", units="s")
-                    plot_item.showGrid(x=True, y=True, alpha=0.3)
-                    plot_item.addLegend(offset=(10, 10))
-                    vb = plot_item.getViewBox()
-                    self._plot_items.append(plot_item)
-                else:
-                    # Share the same plot for channels in same group
-                    pass
+                plot_item = self.plot_widget.addPlot(row=ch_idx, col=0, title=col)
+                plot_item.setLabel("bottom", "时间", units="s")
+                plot_item.showGrid(x=True, y=True, alpha=0.3)
+                self._plot_items.append(plot_item)
 
-                # Downsample if too many points for display
-                values = df[col].values
-                if len(time) > 10000:
-                    step = len(time) // 10000
-                    t_ds = time[::step]
-                    v_ds = values[::step]
-                else:
-                    t_ds = time
-                    v_ds = values
+                t_ds, v_ds = downsample(time, df[col].values)
+                plot_item.plot(t_ds, v_ds, pen=pen)
 
-                plot_item.plot(t_ds, v_ds, pen=pen, name=col, autoDownsample=True)
+                # Link x-axis to first plot
+                if ch_idx > 0 and self._plot_items:
+                    plot_item.setXLink(self._plot_items[0])
 
-            # Add crosshair for cursor linkage
-            if self._cursor_linked and plot_item:
-                self._add_crosshair(plot_item)
+                if self._cursor_linked:
+                    self._add_crosshair(plot_item)
 
-        # Add mode indicator overlay on the first plot
-        if self._plot_items and self._flight_segments:
-            first_plot = self._plot_items[0]
-            for seg in self._flight_segments:
-                classification = seg.get("classification", "unknown")
-                color = MODE_COLORS.get(classification, MODE_COLORS["unknown"])
-                region = pg.LinearRegionItem(
-                    values=[seg["t_start"], seg["t_end"]],
-                    brush=pg.mkBrush(color),
-                    movable=False,
+        else:  # by_category
+            # Group channels by category for shared axes
+            state_cols = [s.display_name for s in result.channel_specs if s.category == "state" and s.display_name in df.columns]
+            control_cols = [s.display_name for s in result.channel_specs if s.category == "control" and s.display_name in df.columns]
+            other_cols = [c for c in df.columns if c not in state_cols and c not in control_cols]
+
+            plot_groups = []
+            if state_cols:
+                plot_groups.append(("状态量", state_cols))
+            if control_cols:
+                plot_groups.append(("控制量", control_cols))
+            if other_cols:
+                plot_groups.append(("其他", other_cols))
+
+            for group_idx, (group_name, cols) in enumerate(plot_groups):
+                plot_item = self.plot_widget.addPlot(
+                    row=group_idx, col=0,
+                    title=f"{group_name}",
                 )
-                region.setZValue(-10)
-                first_plot.addItem(region)
+                plot_item.setLabel("bottom", "时间", units="s")
+                plot_item.showGrid(x=True, y=True, alpha=0.3)
+                plot_item.addLegend(offset=(10, 10))
+                self._plot_items.append(plot_item)
 
+                for ch_idx, col in enumerate(cols):
+                    color = PLOT_COLORS[ch_idx % len(PLOT_COLORS)]
+                    pen = pg.mkPen(color=color, width=1.5)
+                    t_ds, v_ds = downsample(time, df[col].values)
+                    plot_item.plot(t_ds, v_ds, pen=pen, name=col)
+
+                # Link x-axis to first plot
+                if group_idx > 0 and self._plot_items:
+                    plot_item.setXLink(self._plot_items[0])
+
+                if self._cursor_linked:
+                    self._add_crosshair(plot_item)
+
+        # Add mode indicator overlay on all plots
+        if self._plot_items and self._flight_segments:
+            for plot_item in self._plot_items:
+                for seg in self._flight_segments:
+                    classification = seg.get("classification", "unknown")
+                    color = MODE_COLORS.get(classification, MODE_COLORS["unknown"])
+                    region = pg.LinearRegionItem(
+                        values=[seg["t_start"], seg["t_end"]],
+                        brush=pg.mkBrush(color),
+                        movable=False,
+                    )
+                    region.setZValue(-10)
+                    plot_item.addItem(region)
+
+        mode_names = {
+            "overlay": "重叠绘图",
+            "separate": "分开绘图",
+            "by_category": "按类别分组"
+        }
+        mode_name = mode_names.get(plot_mode, plot_mode)
         self.info_label.setText(
-            f"已绘制 {n_channels} 个通道, {len(time):,} 个数据点 | "
+            f"已绘制 {n_channels} 个通道 ({mode_name}), {len(time):,} 个数据点 | "
             f"坐标系: {result.metadata.get('target_frame', 'frd')}"
         )
 
@@ -974,23 +1393,66 @@ class LogViewerWidget(QWidget):
         v_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('r', width=1, style=Qt.PenStyle.DashLine))
         plot_item.addItem(v_line, ignoreBounds=True)
 
+        # Add crosshair lines to all other plots
+        if self._cursor_linked:
+            for pi in self._plot_items:
+                if pi is not plot_item:
+                    linked_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('r', width=1, style=Qt.PenStyle.DashLine))
+                    pi.addItem(linked_line, ignoreBounds=True)
+
         # Connect mouse move
         def mouse_moved(pos):
             if plot_item.sceneBoundingRect().contains(pos):
                 mouse_point = plot_item.getViewBox().mapSceneToView(pos)
-                v_line.setPos(mouse_point.x())
-                # Move linked lines
+                t_pos = mouse_point.x()
+                v_line.setPos(t_pos)
+
+                # Update all linked crosshair lines
                 if self._cursor_linked:
                     for pi in self._plot_items:
                         if pi is not plot_item:
                             for item in pi.items:
                                 if isinstance(item, pg.InfiniteLine):
-                                    item.setPos(mouse_point.x())
+                                    item.setPos(t_pos)
+
+                # Update mode bar cursor
+                self.mode_bar.set_cursor_position(t_pos)
+
+                # Update cursor info label
+                self.cursor_info_label.setText(f"时间: {t_pos:.3f}s")
+
+                # Update statistics panel
+                self.stats_panel.update_statistics(t_pos, self._raw_data)
 
         plot_item.scene().sigMouseMoved.connect(mouse_moved)
 
     def _toggle_cursor_link(self, checked: bool):
         self._cursor_linked = checked
+        # Re-setup crosshairs when toggling
+        if self._plot_items:
+            self._add_crosshair(self._plot_items[0])
+
+    def _toggle_auto_plot(self, checked: bool):
+        self._auto_plot_on_load = checked
+
+    def _on_mode_bar_clicked(self, t: float):
+        """Handle click on mode indicator bar to scroll plots to that time."""
+        if self._plot_items:
+            # Set the X range of all plots to center on the clicked time
+            for pi in self._plot_items:
+                view_range = pi.viewRange()[0]
+                current_duration = view_range[1] - view_range[0]
+                new_start = t - current_duration / 2
+                new_end = t + current_duration / 2
+                pi.setXRange(new_start, new_end, padding=0)
+
+    def _on_clear_clicked(self):
+        """Clear all plots and reset the viewer."""
+        self.plot_widget.clear()
+        self._plot_items.clear()
+        self.info_label.setText('已清除图表，选择通道后点击"绘制"')
+        self.cursor_info_label.setText("")
+        self.stats_panel.stats_label.setText("悬停在图表上查看统计")
 
     def _on_export_clicked(self):
         """Export current pipeline result."""
