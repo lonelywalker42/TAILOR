@@ -611,7 +611,7 @@ build_flight_report(log_metadata, channels, time, identification_results,
 
 ## tailor.ui.log_viewer
 
-时序数据查看器。
+时序数据查看器与响应分析工具。
 
 ```python
 class LogViewerWidget(QWidget):
@@ -633,9 +633,41 @@ class LogViewerWidget(QWidget):
 
 派生通道自动选中并绘图，叠加飞行模式色块。
 
+### 绘图模式
+
+| 模式 | 说明 |
+|------|------|
+| 重叠绘图 | 所有选中通道绘制在同一坐标轴 |
+| 分开绘图 | 每个通道独占一个子图，共享时间轴 |
+| 按类别绘图 | 同一消息类型的通道合并为一组子图 |
+
+### 响应分析
+
+选择指令（setpoint）和响应（state）通道进行等效阶跃响应分析：
+
+**时域指标**（`_compute_step_metrics`）：
+- 自动检测 setpoint 阶跃跳变位置
+- 上升时间：10%-90% 阈值穿越
+- 超调量：峰值偏差 / 阶跃幅度
+- 调节时间：最后超出 ±2% 带的时间
+- 稳态误差：末段平均误差
+- RMSE：均方根误差
+
+**振荡特性**：
+- 振荡次数：误差信号过零点计数
+- 阻尼比：对数衰减法从峰值包络估计
+- 振荡频率：过零点间隔的平均周期
+
+**频域指标**（`_compute_freq_metrics`）：
+- 带宽（-3dB 点）
+- 相位裕度
+- 谐振峰值与频率
+- 直流增益
+
 ### 包含组件
-- `ModeIndicatorBar`: 飞行模式色标指示条（多旋翼=蓝、固定翼=绿、过渡=橙）
-- `ChannelSelector`: 通道选择器（树形结构，支持预设分组，包含"处理通道"分类）
+- `StatisticsPanel`: 实时跟随光标的通道数值统计
+- `ModeIndicatorBar`: 飞行模式色标指示条（多旋翼=蓝、固定翼=绿、过渡=橙），带时间轴和光标位置
+- `ChannelSelector`: 通道选择器（树形结构，搜索框，预设分组，展开/折叠按钮，类型和单位列）
 
 ---
 
@@ -645,11 +677,33 @@ class LogViewerWidget(QWidget):
 
 ```python
 class IdentPanel(QWidget):
-    def load_data(flat_data: dict[str, np.ndarray])
+    def load_data(flat_data: dict[str, np.ndarray], time: np.ndarray = None)
+    def auto_setup_pairs(flat_data: dict[str, np.ndarray], time: np.ndarray = None)
     def clear()
 ```
 
 流程：数据选择 → 激励检测 → 预处理 → 模型配置 → 执行辨识 → 结果展示
+
+### 自动通道匹配
+
+`auto_setup_pairs` 根据 PX4 uORB 消息命名规则自动匹配 12 种标准通道对：
+
+| 类别 | 轴 | 指令通道 | 响应通道 |
+|------|-----|---------|---------|
+| angular_rate | roll | `vehicle_rates_setpoint.roll_rate_sp` | `sensor_gyro.gyro_x` |
+| angular_rate | pitch | `vehicle_rates_setpoint.pitch_rate_sp` | `sensor_gyro.gyro_y` |
+| angular_rate | yaw | `vehicle_rates_setpoint.yaw_rate_sp` | `sensor_gyro.gyro_z` |
+| attitude | roll | `vehicle_attitude_setpoint.roll_body` | `derived_attitude_deg.roll_deg` |
+| attitude | pitch | `vehicle_attitude_setpoint.pitch_body` | `derived_attitude_deg.pitch_deg` |
+| attitude | yaw | `vehicle_attitude_setpoint.yaw_body` | `derived_attitude_deg.yaw_deg` |
+| velocity | x | `vehicle_local_position_setpoint.vx` | `derived_velocity_m_s.vx` |
+| velocity | y | `vehicle_local_position_setpoint.vy` | `derived_velocity_m_s.vy` |
+| velocity | z | `vehicle_local_position_setpoint.vz` | `derived_velocity_m_s.vz` |
+| position | x | `vehicle_local_position_setpoint.x` | `derived_position_m.x` |
+| position | y | `vehicle_local_position_setpoint.y` | `derived_position_m.y` |
+| position | z | `vehicle_local_position_setpoint.z` | `derived_position_m.z` |
+
+未匹配成功的通道对由用户通过类别/轴下拉框手动指定。
 
 ---
 

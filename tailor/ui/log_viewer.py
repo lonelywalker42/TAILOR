@@ -641,17 +641,22 @@ class LogViewerWidget(QWidget):
         plot_layout.setContentsMargins(0, 0, 0, 0)
         plot_layout.setSpacing(2)
 
-        # Top toolbar area
+        # Top toolbar area - use vertical layout to avoid overlap
         toolbar_frame = QFrame()
         toolbar_frame.setFrameStyle(QFrame.Shape.StyledPanel)
-        toolbar_layout = QHBoxLayout(toolbar_frame)
-        toolbar_layout.setContentsMargins(4, 2, 4, 2)
+        toolbar_main_layout = QVBoxLayout(toolbar_frame)
+        toolbar_main_layout.setContentsMargins(4, 4, 4, 4)
+        toolbar_main_layout.setSpacing(4)
 
-        # Left toolbar group: view controls
+        # Row 1: View and Processing controls
+        row1_layout = QHBoxLayout()
+        row1_layout.setSpacing(8)
+
+        # View controls
         view_group = QGroupBox("视图")
-        view_group.setStyleSheet("QGroupBox { font-size: 10px; }")
+        view_group.setStyleSheet("QGroupBox { font-size: 10px; font-weight: bold; }")
         view_layout = QHBoxLayout(view_group)
-        view_layout.setContentsMargins(4, 2, 4, 2)
+        view_layout.setContentsMargins(6, 4, 6, 4)
 
         self.link_cursor_cb = QCheckBox("光标联动")
         self.link_cursor_cb.setChecked(True)
@@ -663,27 +668,26 @@ class LogViewerWidget(QWidget):
         self.auto_plot_cb.toggled.connect(self._toggle_auto_plot)
         view_layout.addWidget(self.auto_plot_cb)
 
-        # Plot mode selector
-        view_layout.addWidget(QLabel("绘图模式:"))
+        view_layout.addWidget(QLabel("模式:"))
         self.plot_mode_combo = QComboBox()
-        self.plot_mode_combo.addItem("重叠绘图", "overlay")
-        self.plot_mode_combo.addItem("分开绘图", "separate")
-        self.plot_mode_combo.addItem("按类别分组", "by_category")
+        self.plot_mode_combo.addItem("重叠", "overlay")
+        self.plot_mode_combo.addItem("分开", "separate")
+        self.plot_mode_combo.addItem("按类别", "by_category")
         self.plot_mode_combo.setToolTip(
-            "重叠绘图: 所有通道在同一图表显示\n"
-            "分开绘图: 每个通道单独一个图表\n"
-            "按类别分组: 同类通道重叠，不同类分开"
+            "重叠: 所有通道在同一图表\n"
+            "分开: 每个通道单独图表\n"
+            "按类别: 同类重叠，不同类分开"
         )
-        self.plot_mode_combo.setFixedWidth(100)
+        self.plot_mode_combo.setFixedWidth(70)
         view_layout.addWidget(self.plot_mode_combo)
 
-        toolbar_layout.addWidget(view_group)
+        row1_layout.addWidget(view_group)
 
-        # Middle toolbar group: processing controls
+        # Processing controls
         proc_group = QGroupBox("处理")
-        proc_group.setStyleSheet("QGroupBox { font-size: 10px; }")
+        proc_group.setStyleSheet("QGroupBox { font-size: 10px; font-weight: bold; }")
         proc_layout = QHBoxLayout(proc_group)
-        proc_layout.setContentsMargins(4, 2, 4, 2)
+        proc_layout.setContentsMargins(6, 4, 6, 4)
 
         proc_layout.addWidget(QLabel("重采样:"))
         self.resample_spin = QDoubleSpinBox()
@@ -692,7 +696,7 @@ class LogViewerWidget(QWidget):
         self.resample_spin.setSpecialValueText("原始")
         self.resample_spin.setDecimals(1)
         self.resample_spin.setSuffix(" Hz")
-        self.resample_spin.setFixedWidth(90)
+        self.resample_spin.setFixedWidth(80)
         proc_layout.addWidget(self.resample_spin)
 
         proc_layout.addWidget(QLabel("坐标系:"))
@@ -701,16 +705,16 @@ class LogViewerWidget(QWidget):
         self.frame_combo.addItem("NED", "ned")
         self.frame_combo.addItem("ENU", "enu")
         self.frame_combo.addItem("推力垂向", "thrust_vertical")
-        self.frame_combo.setFixedWidth(80)
+        self.frame_combo.setFixedWidth(70)
         proc_layout.addWidget(self.frame_combo)
 
-        toolbar_layout.addWidget(proc_group)
+        row1_layout.addWidget(proc_group)
 
-        # Right toolbar group: action buttons
+        # Action buttons
         action_group = QGroupBox("操作")
-        action_group.setStyleSheet("QGroupBox { font-size: 10px; }")
+        action_group.setStyleSheet("QGroupBox { font-size: 10px; font-weight: bold; }")
         action_layout = QHBoxLayout(action_group)
-        action_layout.setContentsMargins(4, 2, 4, 2)
+        action_layout.setContentsMargins(6, 4, 6, 4)
 
         self.plot_btn = QPushButton("绘制")
         self.plot_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 4px 12px; }")
@@ -725,7 +729,41 @@ class LogViewerWidget(QWidget):
         self.export_btn.clicked.connect(self._on_export_clicked)
         action_layout.addWidget(self.export_btn)
 
-        toolbar_layout.addWidget(action_group)
+        row1_layout.addWidget(action_group)
+
+        toolbar_main_layout.addLayout(row1_layout)
+
+        # Row 2: Response analysis
+        row2_layout = QHBoxLayout()
+        row2_layout.setSpacing(8)
+
+        response_group = QGroupBox("响应分析")
+        response_group.setStyleSheet("QGroupBox { font-size: 10px; font-weight: bold; }")
+        response_layout = QHBoxLayout(response_group)
+        response_layout.setContentsMargins(6, 4, 6, 4)
+
+        response_layout.addWidget(QLabel("指令通道:"))
+        self.cmd_combo = QComboBox()
+        self.cmd_combo.setMinimumWidth(150)
+        self.cmd_combo.setToolTip("选择指令通道 (setpoint)")
+        response_layout.addWidget(self.cmd_combo)
+
+        response_layout.addWidget(QLabel("响应通道:"))
+        self.resp_combo = QComboBox()
+        self.resp_combo.setMinimumWidth(150)
+        self.resp_combo.setToolTip("选择响应通道 (state)")
+        response_layout.addWidget(self.resp_combo)
+
+        self.analyze_btn = QPushButton("分析")
+        self.analyze_btn.setStyleSheet("QPushButton { font-weight: bold; padding: 4px 16px; background-color: #4CAF50; color: white; }")
+        self.analyze_btn.clicked.connect(self._on_analyze_response)
+        self.analyze_btn.setToolTip("分析指令与响应的跟踪性能")
+        response_layout.addWidget(self.analyze_btn)
+
+        # Add stretch to push combo boxes to the left
+        row2_layout.addWidget(response_group, stretch=1)
+
+        toolbar_main_layout.addLayout(row2_layout)
 
         plot_layout.addWidget(toolbar_frame)
 
@@ -961,6 +999,9 @@ class LogViewerWidget(QWidget):
             if ch_key.startswith("derived_"):
                 item.setCheckState(0, Qt.CheckState.Checked)
 
+        # Populate command and response combos for response analysis
+        self._populate_response_combos()
+
         # Update mode bar
         if self._flight_segments:
             t_start = min(s["t_start"] for s in self._flight_segments)
@@ -987,6 +1028,69 @@ class LogViewerWidget(QWidget):
         # Auto-plot derived channels if enabled
         if processed_fields and self._auto_plot_on_load:
             self._auto_plot_derived()
+
+    def _populate_response_combos(self):
+        """Populate command and response channel combos for response analysis."""
+        self.cmd_combo.clear()
+        self.resp_combo.clear()
+
+        # Define channel categories for command and response
+        cmd_channels = []  # Setpoint channels
+        resp_channels = []  # State channels
+
+        for name, df in self._raw_data.items():
+            if hasattr(df, 'empty') and df.empty:
+                continue
+            if not hasattr(df, 'columns'):
+                continue
+
+            # Get numeric columns (excluding timestamp)
+            numeric_cols = [c for c in df.columns if c not in ("timestamp_s", "timestamp", "instance")]
+            if not numeric_cols:
+                continue
+
+            # Categorize based on message name
+            if "setpoint" in name or "control" in name:
+                # Command/setpoint channel
+                for col in numeric_cols:
+                    ch_key = f"{name}.{col}"
+                    cmd_channels.append(ch_key)
+            else:
+                # State/measurement channel
+                for col in numeric_cols:
+                    ch_key = f"{name}.{col}"
+                    resp_channels.append(ch_key)
+
+        # Sort and add to combos
+        cmd_channels.sort()
+        resp_channels.sort()
+
+        self.cmd_combo.addItems(cmd_channels)
+        self.resp_combo.addItems(resp_channels)
+
+        # Try to auto-select matching pairs
+        self._auto_select_response_pair()
+
+    def _auto_select_response_pair(self):
+        """Auto-select matching command-response pair."""
+        # Standard pairs to try
+        AUTO_PAIRS = [
+            ("derived_angular_rate_setpoint.roll_rate_sp", "derived_gyro_rad_s.gyro_x"),
+            ("derived_angular_rate_setpoint.pitch_rate_sp", "derived_gyro_rad_s.gyro_y"),
+            ("derived_angular_rate_setpoint.yaw_rate_sp", "derived_gyro_rad_s.gyro_z"),
+            ("derived_attitude_setpoint_deg.roll_deg_sp", "derived_attitude_deg.roll_deg"),
+            ("derived_attitude_setpoint_deg.pitch_deg_sp", "derived_attitude_deg.pitch_deg"),
+            ("derived_velocity_setpoint.vx_sp", "derived_velocity_m_s.vx"),
+            ("derived_position_setpoint.x_sp", "derived_position_m.x"),
+        ]
+
+        for cmd_ch, resp_ch in AUTO_PAIRS:
+            cmd_idx = self.cmd_combo.findText(cmd_ch)
+            resp_idx = self.resp_combo.findText(resp_ch)
+            if cmd_idx >= 0 and resp_idx >= 0:
+                self.cmd_combo.setCurrentIndex(cmd_idx)
+                self.resp_combo.setCurrentIndex(resp_idx)
+                break
 
     def _auto_plot_derived(self):
         """Auto-plot derived channels with setpoint vs estimated overlaid."""
@@ -1476,6 +1580,562 @@ class LogViewerWidget(QWidget):
             self.info_label.setText(f"已导出: {out}")
         except Exception as e:
             self.info_label.setText(f"导出失败: {e}")
+
+    def _find_setpoint_state_pairs(self) -> list[tuple[str, str, str]]:
+        """Find matching setpoint and state channel pairs.
+
+        Returns:
+            List of (setpoint_channel, state_channel, axis_label) tuples.
+        """
+        pairs = []
+
+        # Define standard setpoint-state pairs
+        STANDARD_PAIRS = [
+            # Angular rate
+            ("derived_angular_rate_setpoint.roll_rate_sp", "derived_gyro_rad_s.gyro_x", "Roll 角速度"),
+            ("derived_angular_rate_setpoint.pitch_rate_sp", "derived_gyro_rad_s.gyro_y", "Pitch 角速度"),
+            ("derived_angular_rate_setpoint.yaw_rate_sp", "derived_gyro_rad_s.gyro_z", "Yaw 角速度"),
+            # Attitude
+            ("derived_attitude_setpoint_deg.roll_deg_sp", "derived_attitude_deg.roll_deg", "Roll 姿态角"),
+            ("derived_attitude_setpoint_deg.pitch_deg_sp", "derived_attitude_deg.pitch_deg", "Pitch 姿态角"),
+            ("derived_attitude_setpoint_deg.yaw_deg_sp", "derived_attitude_deg.yaw_deg", "Yaw 姿态角"),
+            # Velocity
+            ("derived_velocity_setpoint.vx_sp", "derived_velocity_m_s.vx", "X 速度"),
+            ("derived_velocity_setpoint.vy_sp", "derived_velocity_m_s.vy", "Y 速度"),
+            ("derived_velocity_setpoint.vz_sp", "derived_velocity_m_s.vz", "Z 速度"),
+            # Position
+            ("derived_position_setpoint.x_sp", "derived_position_m.x", "X 位置"),
+            ("derived_position_setpoint.y_sp", "derived_position_m.y", "Y 位置"),
+            ("derived_position_setpoint.z_sp", "derived_position_m.z", "Z 位置"),
+        ]
+
+        # Check which pairs are available in the data
+        for sp_ch, state_ch, label in STANDARD_PAIRS:
+            if sp_ch in self._raw_data and state_ch in self._raw_data:
+                sp_df = self._raw_data[sp_ch]
+                state_df = self._raw_data[state_ch]
+                if hasattr(sp_df, 'empty') and not sp_df.empty and hasattr(state_df, 'empty') and not state_df.empty:
+                    pairs.append((sp_ch, state_ch, label))
+
+        return pairs
+
+    def _on_analyze_response(self):
+        """Analyze response performance for selected command-response pair."""
+        # Get selected channels from combos
+        cmd_ch = self.cmd_combo.currentText()
+        resp_ch = self.resp_combo.currentText()
+
+        if not cmd_ch or not resp_ch:
+            self.info_label.setText("请选择指令通道和响应通道")
+            return
+
+        # Check if channels exist in data
+        # Channels are stored as "message.field" keys in _raw_data
+        # But the combo stores them as "message.field" too
+        # We need to find the actual DataFrame
+
+        cmd_data = None
+        resp_data = None
+
+        # Search for the channel in raw_data
+        for name, df in self._raw_data.items():
+            if not hasattr(df, 'columns'):
+                continue
+            # Check if this is the message containing our field
+            if cmd_ch.startswith(name + "."):
+                field = cmd_ch.split(".", 1)[1]
+                if field in df.columns:
+                    cmd_data = df
+                    cmd_field = field
+                    break
+            elif cmd_ch == name:
+                # Single column message
+                cmd_data = df
+                cmd_field = None
+                break
+
+        for name, df in self._raw_data.items():
+            if not hasattr(df, 'columns'):
+                continue
+            if resp_ch.startswith(name + "."):
+                field = resp_ch.split(".", 1)[1]
+                if field in df.columns:
+                    resp_data = df
+                    resp_field = field
+                    break
+            elif resp_ch == name:
+                resp_data = df
+                resp_field = None
+                break
+
+        if cmd_data is None or resp_data is None:
+            self.info_label.setText(f"未找到通道数据: {cmd_ch} 或 {resp_ch}")
+            return
+
+        # Get time and values
+        if "timestamp_s" in cmd_data.columns:
+            t_cmd = cmd_data["timestamp_s"].values
+            if cmd_field:
+                cmd_values = cmd_data[cmd_field].values
+            else:
+                cmd_values = cmd_data.select_dtypes(include=[np.number]).values.flatten()
+        else:
+            self.info_label.setText("指令通道缺少时间戳")
+            return
+
+        if "timestamp_s" in resp_data.columns:
+            t_resp = resp_data["timestamp_s"].values
+            if resp_field:
+                resp_values = resp_data[resp_field].values
+            else:
+                resp_values = resp_data.select_dtypes(include=[np.number]).values.flatten()
+        else:
+            self.info_label.setText("响应通道缺少时间戳")
+            return
+
+        # Align lengths
+        n = min(len(cmd_values), len(resp_values))
+        cmd_values = cmd_values[:n]
+        resp_values = resp_values[:n]
+
+        if n < 10:
+            self.info_label.setText("数据点不足 (需要至少10个点)")
+            return
+
+        # Use response time as reference
+        t = t_resp[:n]
+        dt = np.mean(np.diff(t))
+
+        # Clear plots and prepare for analysis
+        self.plot_widget.clear()
+        self._plot_items.clear()
+
+        # Compute step response metrics
+        metrics = self._compute_step_metrics(cmd_values, resp_values, t)
+
+        # Compute frequency response metrics
+        freq_metrics = self._compute_freq_metrics(cmd_values, resp_values, dt)
+
+        # Create label from channel names
+        label = f"{cmd_ch} → {resp_ch}"
+
+        # Store result
+        result = {
+            "label": label,
+            "cmd_ch": cmd_ch,
+            "resp_ch": resp_ch,
+            "metrics": metrics,
+            "freq_metrics": freq_metrics,
+        }
+
+        # Plot step response
+        plot_item = self.plot_widget.addPlot(row=0, col=0, title="响应分析")
+        plot_item.setLabel("bottom", "时间", units="s")
+        plot_item.setLabel("left", "幅值")
+        plot_item.showGrid(x=True, y=True, alpha=0.3)
+        plot_item.addLegend(offset=(10, 10))
+        self._plot_items.append(plot_item)
+
+        # Downsample for display
+        max_pts = 5000
+        if n > max_pts:
+            step = n // max_pts
+            t_ds = t[::step]
+            cmd_ds = cmd_values[::step]
+            resp_ds = resp_values[::step]
+        else:
+            t_ds = t
+            cmd_ds = cmd_values
+            resp_ds = resp_values
+
+        # Plot command (setpoint)
+        pen_cmd = pg.mkPen(color=(55, 126, 184), width=1.5)
+        plot_item.plot(t_ds, cmd_ds, pen=pen_cmd, name="指令")
+
+        # Plot response
+        pen_resp = pg.mkPen(color=(228, 26, 28), width=1.5)
+        plot_item.plot(t_ds, resp_ds, pen=pen_resp, name="响应")
+
+        # Add reference lines for metrics
+        if metrics.get("rise_time_s") is not None:
+            # Add 10% and 90% threshold lines
+            cmd_range = np.max(cmd_values) - np.min(cmd_values)
+            cmd_mean = np.mean(cmd_values)
+            pen_thresh = pg.mkPen(color=(150, 150, 150), width=1, style=Qt.PenStyle.DotLine)
+            plot_item.addLine(y=cmd_mean + 0.1 * cmd_range, pen=pen_thresh)
+            plot_item.addLine(y=cmd_mean + 0.9 * cmd_range, pen=pen_thresh)
+
+        # Add error plot
+        error_plot = self.plot_widget.addPlot(row=1, col=0, title="跟踪误差")
+        error_plot.setLabel("bottom", "时间", units="s")
+        error_plot.setLabel("left", "误差")
+        error_plot.showGrid(x=True, y=True, alpha=0.3)
+        self._plot_items.append(error_plot)
+
+        # Compute and plot error
+        error = cmd_values - resp_values
+        if n > max_pts:
+            error_ds = error[::step]
+        else:
+            error_ds = error
+
+        pen_err = pg.mkPen(color=(255, 127, 0), width=1)
+        error_plot.plot(t_ds, error_ds, pen=pen_err, name="误差")
+
+        # Add zero reference line
+        pen_zero = pg.mkPen(color=(150, 150, 150), width=1, style=Qt.PenStyle.DotLine)
+        error_plot.addLine(y=0, pen=pen_zero)
+
+        # Link x-axis
+        error_plot.setXLink(plot_item)
+
+        # Update statistics panel with analysis results
+        self._update_analysis_stats([result])
+
+        self.info_label.setText(
+            f"响应分析完成: {cmd_ch} → {resp_ch} | "
+            f"查看右侧统计面板获取详细指标"
+        )
+
+    def _compute_step_metrics(self, sp: np.ndarray, state: np.ndarray, t: np.ndarray) -> dict:
+        """Compute step response metrics treating setpoint vs state as equivalent step response.
+
+        Analyzes: steady-state error, overshoot, settling time, oscillation characteristics.
+
+        Args:
+            sp: Setpoint values
+            state: State values
+            t: Time array
+
+        Returns:
+            Dictionary with step response metrics
+        """
+        metrics = {}
+        n = len(state)
+        if n < 10:
+            return metrics
+
+        # --- Identify step transition ---
+        # Find the dominant step change in setpoint
+        sp_diff = np.diff(sp)
+        sp_range = np.max(sp) - np.min(sp)
+
+        if sp_range < 1e-10:
+            # No significant step change; use mean as reference
+            sp_final = np.mean(sp)
+            sp_initial = sp_final
+            step_idx = 0
+        else:
+            # Find the largest step change
+            step_idx = np.argmax(np.abs(sp_diff))
+            # Use median before and after step as initial/final
+            half = n // 2
+            if step_idx < half:
+                sp_initial = np.median(sp[:step_idx + 1]) if step_idx > 0 else sp[0]
+                sp_final = np.median(sp[step_idx + 1:])
+            else:
+                sp_initial = np.median(sp[:half])
+                sp_final = np.median(sp[half:])
+
+        step_size = abs(sp_final - sp_initial)
+
+        # --- Error signal ---
+        error = state - sp
+        ss_start = int(n * 0.8)
+        ss_error_value = np.mean(error[ss_start:])
+        metrics["ss_error"] = abs(ss_error_value)
+        metrics["ss_error_signed"] = ss_error_value
+
+        # --- RMSE ---
+        metrics["rmse"] = float(np.sqrt(np.mean(error ** 2)))
+
+        # If step size is negligible, return basic metrics
+        if step_size < 1e-10:
+            metrics["overshoot_pct"] = 0.0
+            metrics["rise_time_s"] = None
+            metrics["settling_time_s"] = None
+            metrics["osc_count"] = 0
+            metrics["damping_ratio"] = None
+            metrics["osc_freq_hz"] = None
+            return metrics
+
+        # --- Overshoot ---
+        # Overshoot = (peak - final) / step_size * 100 for positive step
+        #             (final - trough) / step_size * 100 for negative step
+        step_sign = 1.0 if sp_final >= sp_initial else -1.0
+        deviation = (state - sp_final) * step_sign
+
+        # Only consider deviations after the step transition
+        post_step = deviation[step_idx:] if step_idx < n - 1 else deviation
+        max_positive_dev = np.max(post_step)
+        max_negative_dev = np.min(post_step)
+
+        if max_positive_dev > 0:
+            overshoot_pct = (max_positive_dev / step_size) * 100
+        elif max_negative_dev < 0:
+            # Undershoot case
+            overshoot_pct = 0.0
+            metrics["undershoot_pct"] = (abs(max_negative_dev) / step_size) * 100
+        else:
+            overshoot_pct = 0.0
+
+        metrics["overshoot_pct"] = float(overshoot_pct)
+
+        # --- Rise time (10% to 90% of step) ---
+        thresh_10 = sp_initial + 0.1 * (sp_final - sp_initial)
+        thresh_90 = sp_initial + 0.9 * (sp_final - sp_initial)
+
+        if sp_final > sp_initial:
+            idx_10 = np.where(state >= thresh_10)[0]
+            idx_90 = np.where(state >= thresh_90)[0]
+        else:
+            idx_10 = np.where(state <= thresh_10)[0]
+            idx_90 = np.where(state <= thresh_90)[0]
+
+        if len(idx_10) > 0 and len(idx_90) > 0:
+            i10 = idx_10[0]
+            i90 = idx_90[0]
+            if i90 > i10:
+                metrics["rise_time_s"] = float(t[i90] - t[i10])
+            else:
+                metrics["rise_time_s"] = None
+        else:
+            metrics["rise_time_s"] = None
+
+        # --- Settling time (last time error exceeds ±2% of step size) ---
+        band = 0.02 * step_size
+        # Search backwards from the end
+        settling_idx = None
+        for i in range(n - 1, step_idx, -1):
+            if abs(state[i] - sp_final) > band:
+                settling_idx = i
+                break
+
+        if settling_idx is not None and settling_idx < n - 1:
+            metrics["settling_time_s"] = float(t[settling_idx] - t[step_idx])
+        else:
+            # Settled from the start or no step detected
+            metrics["settling_time_s"] = 0.0
+
+        # --- Oscillation characteristics ---
+        # Use error signal after step transition for oscillation analysis
+        if step_idx < n - 20:
+            err_post = error[step_idx:]
+            t_post = t[step_idx:] - t[step_idx]
+
+            # Count zero crossings of error (oscillation count)
+            err_sign = np.sign(err_post - np.mean(err_post[ss_start - step_idx:]))
+            crossings = np.where(np.diff(err_sign) != 0)[0]
+            osc_count = len(crossings) // 2  # Each oscillation = 2 crossings
+            metrics["osc_count"] = int(osc_count)
+
+            # Oscillation frequency from zero crossings
+            if len(crossings) >= 2:
+                avg_period = 2 * (t_post[crossings[-1]] - t_post[crossings[0]]) / len(crossings)
+                if avg_period > 0:
+                    metrics["osc_freq_hz"] = float(1.0 / avg_period)
+                else:
+                    metrics["osc_freq_hz"] = None
+            else:
+                metrics["osc_freq_hz"] = None
+
+            # Damping ratio estimation from peak envelope decay
+            # Find peaks in the error signal after step
+            from scipy.signal import find_peaks
+            peaks_pos, _ = find_peaks(err_post, height=band * 0.5)
+            peaks_neg, _ = find_peaks(-err_post, height=band * 0.5)
+
+            if len(peaks_pos) >= 2:
+                # Logarithmic decrement from positive peaks
+                peak_vals = err_post[peaks_pos]
+                peak_vals = np.abs(peak_vals)
+                peak_vals = peak_vals[peak_vals > band * 0.1]  # Filter noise
+                if len(peak_vals) >= 2:
+                    # delta = ln(A1/A2) for successive peaks
+                    deltas = np.log(peak_vals[:-1] / (peak_vals[1:] + 1e-10))
+                    delta = np.mean(deltas[deltas > 0])
+                    if delta > 0 and np.isfinite(delta):
+                        # zeta = delta / sqrt(4*pi^2 + delta^2)
+                        damping = delta / np.sqrt(4 * np.pi ** 2 + delta ** 2)
+                        metrics["damping_ratio"] = float(np.clip(damping, 0, 1))
+                    else:
+                        metrics["damping_ratio"] = None
+                else:
+                    metrics["damping_ratio"] = None
+            elif len(peaks_neg) >= 2:
+                peak_vals = np.abs(err_post[peaks_neg])
+                peak_vals = peak_vals[peak_vals > band * 0.1]
+                if len(peak_vals) >= 2:
+                    deltas = np.log(peak_vals[:-1] / (peak_vals[1:] + 1e-10))
+                    delta = np.mean(deltas[deltas > 0])
+                    if delta > 0 and np.isfinite(delta):
+                        damping = delta / np.sqrt(4 * np.pi ** 2 + delta ** 2)
+                        metrics["damping_ratio"] = float(np.clip(damping, 0, 1))
+                    else:
+                        metrics["damping_ratio"] = None
+                else:
+                    metrics["damping_ratio"] = None
+            else:
+                metrics["damping_ratio"] = None
+        else:
+            metrics["osc_count"] = 0
+            metrics["osc_freq_hz"] = None
+            metrics["damping_ratio"] = None
+
+        return metrics
+
+    def _compute_freq_metrics(self, sp: np.ndarray, state: np.ndarray, dt: float) -> dict:
+        """Compute frequency response metrics.
+
+        Args:
+            sp: Setpoint values
+            state: State values
+            dt: Sample time
+
+        Returns:
+            Dictionary with frequency response metrics
+        """
+        from scipy import signal
+
+        metrics = {}
+
+        try:
+            # Compute transfer function using cross-spectral density
+            fs = 1.0 / dt
+
+            # Compute cross-spectral density
+            f, Pxy = signal.csd(sp, state, fs=fs, nperseg=min(256, len(sp) // 4))
+            f, Pxx = signal.welch(sp, fs=fs, nperseg=min(256, len(sp) // 4))
+
+            # Compute frequency response (H = Pxy / Pxx)
+            H = Pxy / (Pxx + 1e-10)  # Add small value to avoid division by zero
+
+            # Compute magnitude and phase
+            mag = np.abs(H)
+            phase = np.angle(H, deg=True)
+
+            # Find bandwidth (-3dB point)
+            mag_db = 20 * np.log10(mag + 1e-10)
+            dc_gain_db = mag_db[0]
+
+            # Find -3dB point
+            bandwidth_hz = None
+            for i in range(len(mag_db)):
+                if mag_db[i] < dc_gain_db - 3:
+                    if i > 0:
+                        # Interpolate
+                        f1, f2 = f[i-1], f[i]
+                        m1, m2 = mag_db[i-1], mag_db[i]
+                        bandwidth_hz = f1 + (f2 - f1) * (dc_gain_db - 3 - m1) / (m2 - m1)
+                    else:
+                        bandwidth_hz = f[i]
+                    break
+
+            metrics["bandwidth_hz"] = bandwidth_hz
+
+            # Compute phase margin (at bandwidth frequency)
+            if bandwidth_hz is not None:
+                # Find phase at bandwidth
+                idx_bw = np.argmin(np.abs(f - bandwidth_hz))
+                phase_at_bw = phase[idx_bw]
+                metrics["phase_margin_deg"] = 180 + phase_at_bw
+            else:
+                metrics["phase_margin_deg"] = None
+
+            # Compute DC gain
+            metrics["dc_gain"] = mag[0]
+
+            # Compute resonance peak
+            peak_idx = np.argmax(mag)
+            metrics["resonance_peak_db"] = 20 * np.log10(mag[peak_idx] + 1e-10)
+            metrics["resonance_freq_hz"] = f[peak_idx]
+
+        except Exception as e:
+            metrics["error"] = str(e)
+
+        return metrics
+
+    def _update_analysis_stats(self, results: list[dict]):
+        """Update statistics panel with analysis results."""
+        if not results:
+            return
+
+        stats_text = ["<b>=== 响应分析结果 ===</b>"]
+
+        for result in results:
+            label = result["label"]
+            metrics = result["metrics"]
+            freq_metrics = result["freq_metrics"]
+
+            stats_text.append(f"<br><b>{label}</b>")
+
+            # Step response metrics
+            stats_text.append("<b>时域指标:</b>")
+
+            if metrics.get("rise_time_s") is not None:
+                stats_text.append(f"  上升时间: {metrics['rise_time_s']:.3f}s")
+            else:
+                stats_text.append(f"  上升时间: N/A")
+
+            if metrics.get("overshoot_pct") is not None:
+                val = metrics["overshoot_pct"]
+                status = " [!]" if val > 10 else ""
+                stats_text.append(f"  超调量: {val:.1f}%{status}")
+
+            if metrics.get("undershoot_pct") is not None:
+                stats_text.append(f"  下冲量: {metrics['undershoot_pct']:.1f}%")
+
+            if metrics.get("settling_time_s") is not None:
+                stats_text.append(f"  调节时间: {metrics['settling_time_s']:.3f}s")
+
+            if metrics.get("ss_error") is not None:
+                val = metrics["ss_error"]
+                status = " [!]" if val > 0.05 else ""
+                stats_text.append(f"  稳态误差: {val:.4f}{status}")
+
+            stats_text.append(f"  RMSE: {metrics.get('rmse', 0):.4f}")
+
+            # Oscillation characteristics
+            stats_text.append("<b>振荡特性:</b>")
+            osc_count = metrics.get("osc_count", 0)
+            stats_text.append(f"  振荡次数: {osc_count}")
+
+            if metrics.get("damping_ratio") is not None:
+                zeta = metrics["damping_ratio"]
+                if zeta < 0.4:
+                    desc = "欠阻尼(振荡)"
+                elif zeta < 0.8:
+                    desc = "欠阻尼(良好)"
+                elif zeta < 1.0:
+                    desc = "欠阻尼(临界)"
+                else:
+                    desc = "过阻尼"
+                stats_text.append(f"  阻尼比: {zeta:.3f} ({desc})")
+            else:
+                stats_text.append(f"  阻尼比: N/A")
+
+            if metrics.get("osc_freq_hz") is not None:
+                stats_text.append(f"  振荡频率: {metrics['osc_freq_hz']:.2f}Hz")
+
+            # Frequency response metrics
+            stats_text.append("<b>频域指标:</b>")
+            if freq_metrics.get("bandwidth_hz") is not None:
+                stats_text.append(f"  带宽: {freq_metrics['bandwidth_hz']:.2f}Hz")
+            else:
+                stats_text.append(f"  带宽: N/A")
+
+            if freq_metrics.get("phase_margin_deg") is not None:
+                pm = freq_metrics["phase_margin_deg"]
+                status = " [!]" if pm < 30 else ""
+                stats_text.append(f"  相位裕度: {pm:.1f}deg{status}")
+
+            if freq_metrics.get("resonance_peak_db") is not None:
+                stats_text.append(f"  谐振峰值: {freq_metrics['resonance_peak_db']:.1f}dB")
+
+            if freq_metrics.get("dc_gain") is not None:
+                stats_text.append(f"  直流增益: {freq_metrics['dc_gain']:.3f}")
+
+        self.stats_panel.stats_label.setText("<br>".join(stats_text))
 
     def clear(self):
         """Clear all plots and data."""
