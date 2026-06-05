@@ -283,7 +283,8 @@ class ChannelSelector(QWidget):
         self.preset_combo.addItem("姿态跟踪", "attitude")
         self.preset_combo.addItem("位置控制", "position_control")
         self.preset_combo.addItem("传感器原始", "sensor_raw")
-        self.preset_combo.addItem("执行器", "actuator")
+        self.preset_combo.addItem("执行器控制", "actuator")
+        self.preset_combo.addItem("执行器输出", "actuator_output")
         self.preset_combo.addItem("自定义", "custom")
         self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         preset_layout.addWidget(self.preset_combo)
@@ -445,6 +446,14 @@ class ChannelSelector(QWidget):
             "battery_status": "电池状态",
         }
         if msg_name.startswith("derived_"):
+            if "motor" in msg_name:
+                return "电机输出"
+            if "servo" in msg_name:
+                return "舵机输出"
+            if "pwm" in msg_name:
+                return "PWM输出"
+            if "angular_velocity" in msg_name:
+                return "滤波角速度"
             return "计算量"
         return type_map.get(msg_name, "")
 
@@ -459,14 +468,20 @@ class ChannelSelector(QWidget):
             "roll_deg": "deg", "pitch_deg": "deg", "yaw_deg": "deg",
             "roll_rate_sp": "rad/s", "pitch_rate_sp": "rad/s", "yaw_rate_sp": "rad/s",
             "gyro_x": "rad/s", "gyro_y": "rad/s", "gyro_z": "rad/s",
+            "av_x": "rad/s", "av_y": "rad/s", "av_z": "rad/s",
             "q[0]": "", "q[1]": "", "q[2]": "", "q[3]": "",
             "control[0]": "", "control[1]": "", "control[2]": "", "control[3]": "",
             "vx_sp": "m/s", "vy_sp": "m/s", "vz_sp": "m/s",
             "x_sp": "m", "y_sp": "m", "z_sp": "m",
             "roll_deg_sp": "deg", "pitch_deg_sp": "deg", "yaw_deg_sp": "deg",
+            "roll_ctrl": "", "pitch_ctrl": "", "yaw_ctrl": "", "thrust_ctrl": "",
         }
         if field_name in unit_map:
             return unit_map[field_name]
+        if field_name.startswith("motor_") or field_name.startswith("servo_"):
+            return "[0,1]" if field_name.startswith("motor_") else "[-1,1]"
+        if field_name.startswith("pwm_"):
+            return "us"
         if "rate" in field_name or "gyro" in field_name:
             return "rad/s"
         if "deg" in field_name:
@@ -581,7 +596,7 @@ class ChannelSelector(QWidget):
                 ChannelSpec("sensor_accel", "z", "accel_z", "state"),
             ]
         elif preset == "actuator":
-            # Actuator output preset
+            # Actuator control preset
             from tailor.parser.data_pipeline import ChannelSpec
             targets = [
                 ChannelSpec("actuator_controls", "control[0]", "roll_ctrl", "control"),
@@ -589,6 +604,14 @@ class ChannelSelector(QWidget):
                 ChannelSpec("actuator_controls", "control[2]", "thrust_ctrl", "control"),
                 ChannelSpec("actuator_controls", "control[3]", "yaw_ctrl", "control"),
             ]
+        elif preset == "actuator_output":
+            # Actuator output preset (derived channels)
+            targets = []
+            # Check for motor output channels
+            for ch_key, item in self._channel_items.items():
+                msg, field = ch_key.split(".", 1)
+                if msg in ("derived_motor_output", "derived_servo_output", "derived_actuator_outputs_pwm"):
+                    targets.append(type("Spec", (), {"message": msg, "field": field})())
         else:
             return
 
@@ -960,6 +983,54 @@ class LogViewerWidget(QWidget):
                 processed_data[name] = sub
                 processed_fields[name] = [f"{c}_sp" for c in pos_sp_cols]
 
+        # 8. Motor output from actuator_motors (normalized [0,1])
+        motors_df = raw_data.get("actuator_motors")
+        if motors_df is not None and not motors_df.empty:
+            motor_cols = sorted([c for c in motors_df.columns if c.startswith("control[")])
+            if motor_cols:
+                labels = {c: f"motor_{c.split('[')[1].split(']')[0]}" for c in motor_cols}
+                sub = motors_df[["timestamp_s"] + motor_cols].copy()
+                sub.columns = ["timestamp_s"] + [labels[c] for c in motor_cols]
+                name = "derived_motor_output"
+                processed_data[name] = sub
+                processed_fields[name] = [labels[c] for c in motor_cols]
+
+        # 9. Servo output from actuator_servos (normalized [-1,1])
+        servos_df = raw_data.get("actuator_servos")
+        if servos_df is not None and not servos_df.empty:
+            servo_cols = sorted([c for c in servos_df.columns if c.startswith("control[")])
+            if servo_cols:
+                labels = {c: f"servo_{c.split('[')[1].split(']')[0]}" for c in servo_cols}
+                sub = servos_df[["timestamp_s"] + servo_cols].copy()
+                sub.columns = ["timestamp_s"] + [labels[c] for c in servo_cols]
+                name = "derived_servo_output"
+                processed_data[name] = sub
+                processed_fields[name] = [labels[c] for c in servo_cols]
+
+        # 10. Raw PWM output from actuator_outputs (microseconds)
+        ao_df = raw_data.get("actuator_outputs")
+        if ao_df is not None and not ao_df.empty:
+            pwm_cols = sorted([c for c in ao_df.columns if c.startswith("output[")])
+            if pwm_cols:
+                labels = {c: f"pwm_{c.split('[')[1].split(']')[0]}" for c in pwm_cols}
+                sub = ao_df[["timestamp_s"] + pwm_cols].copy()
+                sub.columns = ["timestamp_s"] + [labels[c] for c in pwm_cols]
+                name = "derived_actuator_outputs_pwm"
+                processed_data[name] = sub
+                processed_fields[name] = [labels[c] for c in pwm_cols]
+
+        # 11. Vehicle angular velocity (filtered, used by rate controller)
+        vav_df = raw_data.get("vehicle_angular_velocity")
+        if vav_df is not None and not vav_df.empty:
+            av_cols = [c for c in ["xyz[0]", "xyz[1]", "xyz[2]"] if c in vav_df.columns]
+            if av_cols:
+                labels = {"xyz[0]": "av_x", "xyz[1]": "av_y", "xyz[2]": "av_z"}
+                sub = vav_df[["timestamp_s"] + av_cols].copy()
+                sub.columns = ["timestamp_s"] + [labels[c] for c in av_cols]
+                name = "derived_vehicle_angular_velocity"
+                processed_data[name] = sub
+                processed_fields[name] = [labels[c] for c in av_cols]
+
         return processed_data, processed_fields
 
     def load_data(
@@ -1076,8 +1147,11 @@ class LogViewerWidget(QWidget):
         # Standard pairs to try
         AUTO_PAIRS = [
             ("derived_angular_rate_setpoint.roll_rate_sp", "derived_gyro_rad_s.gyro_x"),
+            ("derived_angular_rate_setpoint.roll_rate_sp", "derived_vehicle_angular_velocity.av_x"),
             ("derived_angular_rate_setpoint.pitch_rate_sp", "derived_gyro_rad_s.gyro_y"),
+            ("derived_angular_rate_setpoint.pitch_rate_sp", "derived_vehicle_angular_velocity.av_y"),
             ("derived_angular_rate_setpoint.yaw_rate_sp", "derived_gyro_rad_s.gyro_z"),
+            ("derived_angular_rate_setpoint.yaw_rate_sp", "derived_vehicle_angular_velocity.av_z"),
             ("derived_attitude_setpoint_deg.roll_deg_sp", "derived_attitude_deg.roll_deg"),
             ("derived_attitude_setpoint_deg.pitch_deg_sp", "derived_attitude_deg.pitch_deg"),
             ("derived_velocity_setpoint.vx_sp", "derived_velocity_m_s.vx"),
@@ -1292,6 +1366,58 @@ class LogViewerWidget(QWidget):
                 plot_item.setXLink(self._plot_items[0])
             group_idx += 1
 
+        # --- Plot 6: Actuator Outputs (Motor + Servo + PWM) ---
+        motor_df = self._raw_data.get("derived_motor_output")
+        servo_df = self._raw_data.get("derived_servo_output")
+        pwm_df = self._raw_data.get("derived_actuator_outputs_pwm")
+        has_actuator_output = (motor_df is not None and not motor_df.empty) or \
+                              (servo_df is not None and not servo_df.empty) or \
+                              (pwm_df is not None and not pwm_df.empty)
+        if has_actuator_output:
+            plot_item = self.plot_widget.addPlot(row=group_idx, col=0, title="执行器输出 Actuator Outputs")
+            plot_item.setLabel("bottom", "时间", units="s")
+            plot_item.showGrid(x=True, y=True, alpha=0.3)
+            plot_item.addLegend(offset=(10, 10))
+            self._plot_items.append(plot_item)
+
+            motor_colors = [(228, 26, 28), (55, 126, 184), (77, 175, 74), (152, 78, 163),
+                            (255, 127, 0), (0, 126, 126), (166, 86, 40), (247, 129, 191)]
+
+            # Motor outputs (solid lines)
+            if motor_df is not None and not motor_df.empty:
+                motor_fields = [c for c in motor_df.columns if c.startswith("motor_")]
+                for i, field in enumerate(motor_fields):
+                    ch_idx = i % len(motor_colors)
+                    color = motor_colors[ch_idx]
+                    pen = pg.mkPen(color=color, width=1.5)
+                    t, v = _downsample(motor_df["timestamp_s"].values, motor_df[field].values)
+                    plot_item.plot(t, v, pen=pen, name=f"Motor {field.split('_')[1]}")
+
+            # Servo outputs (dashed lines)
+            if servo_df is not None and not servo_df.empty:
+                servo_fields = [c for c in servo_df.columns if c.startswith("servo_")]
+                for i, field in enumerate(servo_fields):
+                    ch_idx = i % len(motor_colors)
+                    color = motor_colors[ch_idx]
+                    pen = pg.mkPen(color=color, width=1.5, style=Qt.PenStyle.DashLine)
+                    t, v = _downsample(servo_df["timestamp_s"].values, servo_df[field].values)
+                    plot_item.plot(t, v, pen=pen, name=f"Servo {field.split('_')[1]}")
+
+            # Raw PWM outputs (if no motor/servo data)
+            if pwm_df is not None and not pwm_df.empty and motor_df is None and servo_df is None:
+                pwm_fields = [c for c in pwm_df.columns if c.startswith("pwm_")]
+                for i, field in enumerate(pwm_fields):
+                    ch_idx = i % len(motor_colors)
+                    color = motor_colors[ch_idx]
+                    pen = pg.mkPen(color=color, width=1.5)
+                    t, v = _downsample(pwm_df["timestamp_s"].values, pwm_df[field].values)
+                    plot_item.plot(t, v, pen=pen, name=f"PWM {field.split('_')[1]} (us)")
+
+            _add_mode_overlay(plot_item)
+            if self._plot_items:
+                plot_item.setXLink(self._plot_items[0])
+            group_idx += 1
+
         # Add crosshair to all plots for synchronized cursor tracking
         if self._cursor_linked and self._plot_items:
             self._add_crosshair(self._plot_items[0])
@@ -1314,6 +1440,8 @@ class LogViewerWidget(QWidget):
             # Determine category from message name
             if "setpoint" in msg or "control" in msg:
                 category = "control"
+            elif "motor" in msg or "servo" in msg or "pwm" in msg or "actuator" in msg:
+                category = "actuator"
             else:
                 category = "state"
             # Shorter display name for derived channels
@@ -1595,6 +1723,10 @@ class LogViewerWidget(QWidget):
             ("derived_angular_rate_setpoint.roll_rate_sp", "derived_gyro_rad_s.gyro_x", "Roll 角速度"),
             ("derived_angular_rate_setpoint.pitch_rate_sp", "derived_gyro_rad_s.gyro_y", "Pitch 角速度"),
             ("derived_angular_rate_setpoint.yaw_rate_sp", "derived_gyro_rad_s.gyro_z", "Yaw 角速度"),
+            # Angular rate (filtered)
+            ("derived_angular_rate_setpoint.roll_rate_sp", "derived_vehicle_angular_velocity.av_x", "Roll 滤波角速度"),
+            ("derived_angular_rate_setpoint.pitch_rate_sp", "derived_vehicle_angular_velocity.av_y", "Pitch 滤波角速度"),
+            ("derived_angular_rate_setpoint.yaw_rate_sp", "derived_vehicle_angular_velocity.av_z", "Yaw 滤波角速度"),
             # Attitude
             ("derived_attitude_setpoint_deg.roll_deg_sp", "derived_attitude_deg.roll_deg", "Roll 姿态角"),
             ("derived_attitude_setpoint_deg.pitch_deg_sp", "derived_attitude_deg.pitch_deg", "Pitch 姿态角"),

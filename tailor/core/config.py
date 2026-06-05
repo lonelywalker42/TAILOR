@@ -43,6 +43,7 @@ CORE_UORB_MESSAGES = [
     "vehicle_attitude",
     "vehicle_attitude_setpoint",
     "vehicle_rates_setpoint",
+    "vehicle_angular_velocity",
     "vehicle_local_position",
     "vehicle_local_position_setpoint",
     "vehicle_global_position",
