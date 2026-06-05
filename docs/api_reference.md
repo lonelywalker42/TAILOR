@@ -11,7 +11,7 @@
 | `APP_DATA_DIR` | Path | 应用数据目录（跨平台） |
 | `DB_PATH` | Path | SQLite 数据库文件路径 |
 | `DATABASE_URL` | str | SQLAlchemy 数据库连接 URL |
-| `CORE_UORB_MESSAGES` | list[str] | 需解析的 24 种 uORB 消息名 |
+| `CORE_UORB_MESSAGES` | list[str] | 需解析的 25 种 uORB 消息名 |
 | `DEFAULT_VEHICLE_PARAMS` | dict | 默认飞行器参数模板 |
 
 ### NavState
@@ -626,12 +626,26 @@ class LogViewerWidget(QWidget):
 | 派生消息名 | 来源 | 字段 | 说明 |
 |-----------|------|------|------|
 | `derived_attitude_deg` | `vehicle_attitude` 四元数 | `roll_deg`, `pitch_deg`, `yaw_deg` | 姿态角（度） |
+| `derived_attitude_setpoint_deg` | `vehicle_attitude_setpoint` 四元数 | `roll_deg_sp`, `pitch_deg_sp`, `yaw_deg_sp` | 姿态角设定值（度） |
 | `derived_angular_rate_setpoint` | `vehicle_rates_setpoint` | `roll_rate_sp`, `pitch_rate_sp`, `yaw_rate_sp` | 角速度设定值 |
 | `derived_gyro_rad_s` | `sensor_gyro` | `gyro_x`, `gyro_y`, `gyro_z` | 陀螺仪原始数据 |
+| `derived_vehicle_angular_velocity` | `vehicle_angular_velocity` | `av_x`, `av_y`, `av_z` | 滤波角速度（控制器使用） |
 | `derived_velocity_m_s` | `vehicle_local_position` | `vx`, `vy`, `vz` | 速度（m/s） |
+| `derived_velocity_setpoint` | `vehicle_local_position_setpoint` | `vx_sp`, `vy_sp`, `vz_sp` | 速度设定值 |
 | `derived_position_m` | `vehicle_local_position` | `x`, `y`, `z` | 位置（m） |
+| `derived_position_setpoint` | `vehicle_local_position_setpoint` | `x_sp`, `y_sp`, `z_sp` | 位置设定值 |
+| `derived_actuator_controls` | `actuator_controls` | `roll_ctrl`, `pitch_ctrl`, `thrust_ctrl`, `yaw_ctrl` | 执行器控制量 |
+| `derived_motor_output` | `actuator_motors` | `motor_0`, `motor_1`, ... | 电机输出 [0,1] |
+| `derived_servo_output` | `actuator_servos` | `servo_0`, `servo_1`, ... | 舵面输出 [-1,1] |
+| `derived_actuator_outputs_pwm` | `actuator_outputs` | `pwm_0`, `pwm_1`, ... | 原始 PWM 输出 (us) |
 
-派生通道自动选中并绘图，叠加飞行模式色块。
+派生通道自动选中并绘图，叠加飞行模式色块。自动绘图包含 6 组子图：
+1. 角速度（陀螺仪实测 vs 角速度指令）
+2. 姿态角（实测 vs 设定值）
+3. 速度（实测 vs 设定值）
+4. 位置（实测 vs 设定值）
+5. 执行器控制量（roll/pitch/yaw/thrust）
+6. 执行器输出（电机实线 + 舵面虚线，或 PWM 原始值）
 
 ### 绘图模式
 
